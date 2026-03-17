@@ -274,4 +274,4 @@ Adding a new plug type is straightforward — see [docs/ADDING_HARDWARE.md](docs
 
 ## License
 
-MIT — use it, fork it, adapt it.
+MIT — use it, fork it, adapt it, add to it.
