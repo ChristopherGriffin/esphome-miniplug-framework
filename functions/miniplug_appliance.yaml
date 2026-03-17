@@ -1,0 +1,287 @@
+#==============================================================================
+# Mini Plug Function: Appliance Monitor
+#==============================================================================
+# File: functions/miniplug_appliance.yaml
+#
+# Monitors appliance power consumption to detect running/idle/off states.
+# Supports two modes:
+#   - Binary: Single threshold (Running/Off)
+#   - Staged: Two thresholds (Active/Idle/Off with Running = Active OR Idle)
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - relay_output      : GPIO output for relay (or relay switch)
+#       - relay_led         : Internal light for relay status LED
+#       - on_button_press   : Script called when button pressed
+#       - power             : Power sensor (W)
+#   - esp_common.yaml providing:
+#       - device_time       : Time component
+#
+# PROVIDES:
+#   IDs:
+#     - appliance          : Switch entity for the relay
+#     - running            : Binary sensor - appliance is consuming power
+#     - cycle_complete     : Binary sensor - fires when Running goes false
+#     - appliance_state    : Text sensor - "Running"/"Off" or "Active"/"Idle"/"Off"
+#     - monitor_mode       : Select - Binary or Staged
+#     - power_threshold    : Number - threshold for Binary mode
+#     - threshold_high     : Number - high threshold for Staged mode
+#     - threshold_low      : Number - low threshold for Staged mode
+#     - button_enabled     : Select - enable/disable physical button
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Switches:
+#     - Appliance          : Relay control (default ALWAYS_ON for monitoring)
+#   Binary Sensors:
+#     - Running            : True when appliance is consuming power above threshold
+#     - Cycle Complete     : Momentarily true when appliance stops running
+#   Text Sensors:
+#     - State              : "Running"/"Off" (Binary) or "Active"/"Idle"/"Off" (Staged)
+#   Selects:
+#     - Monitor Mode       : Binary or Staged
+#     - Button             : Enabled or Disabled
+#   Numbers:
+#     - Power Threshold    : Single threshold for Binary mode (default 50W)
+#     - Threshold High     : Upper threshold for Staged mode (default 1000W)
+#     - Threshold Low      : Lower threshold for Staged mode (default 50W)
+#
+# MODES:
+#   Binary Mode:
+#     - Running = power >= power_threshold
+#     - State shows "Running" or "Off"
+#     - Use for simple on/off appliances (dishwasher, washing machine)
+#
+#   Staged Mode:
+#     - Running = power >= threshold_low
+#     - State shows "Active" (>= high), "Idle" (>= low), or "Off" (< low)
+#     - Use for multi-state appliances (coffee maker: brewing/warming/off)
+#
+# LED BEHAVIOR:
+#     - Follows Running sensor (ON when appliance is running)
+#
+# USAGE:
+#   substitutions:
+#     device_name: "dishwasher"
+#     friendly_name: "Dishwasher"
+#     name_no_dashes: "dishwasher"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/sonoff_s31.yaml
+#     function: !include functions/miniplug_appliance.yaml
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# Globals for State Tracking
+#------------------------------------------------------------------------------
+globals:
+  - id: was_running
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+#------------------------------------------------------------------------------
+# Relay Switch
+#------------------------------------------------------------------------------
+switch:
+  - platform: output
+    name: "Appliance"
+    id: appliance
+    output: relay_output
+    icon: mdi:power-socket-us
+    restore_mode: ALWAYS_ON
+    on_turn_on:
+      - light.turn_on: relay_led
+    on_turn_off:
+      - light.turn_off: relay_led
+
+#------------------------------------------------------------------------------
+# Monitor Mode Select
+#------------------------------------------------------------------------------
+select:
+  - platform: template
+    name: "Monitor Mode"
+    id: monitor_mode
+    icon: mdi:gauge
+    options:
+      - "Binary"
+      - "Staged"
+    initial_option: "Binary"
+    optimistic: true
+    restore_value: true
+    entity_category: config
+    on_value:
+      - script.execute: update_appliance_state
+
+  - platform: template
+    name: "Button"
+    id: button_enabled
+    icon: mdi:gesture-tap-button
+    options:
+      - "Enabled"
+      - "Disabled"
+    initial_option: "Enabled"
+    optimistic: true
+    restore_value: true
+    entity_category: config
+
+#------------------------------------------------------------------------------
+# Threshold Configuration
+#------------------------------------------------------------------------------
+number:
+  # Binary mode threshold
+  - platform: template
+    name: "Power Threshold"
+    id: power_threshold
+    icon: mdi:flash
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 1
+    max_value: 3000
+    step: 1
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: update_appliance_state
+
+  # Staged mode - high threshold
+  - platform: template
+    name: "Threshold High"
+    id: threshold_high
+    icon: mdi:flash-alert
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 1
+    max_value: 3000
+    step: 1
+    initial_value: 1000
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: update_appliance_state
+
+  # Staged mode - low threshold
+  - platform: template
+    name: "Threshold Low"
+    id: threshold_low
+    icon: mdi:flash-outline
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 1
+    max_value: 3000
+    step: 1
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: update_appliance_state
+
+#------------------------------------------------------------------------------
+# Binary Sensors
+#------------------------------------------------------------------------------
+binary_sensor:
+  # Running - appliance is consuming power above threshold
+  - platform: template
+    name: "Running"
+    id: running
+    icon: mdi:play-circle
+    device_class: running
+    lambda: |-
+      float pwr = id(power).state;
+      if (isnan(pwr)) return false;
+
+      if (id(monitor_mode).state == "Binary") {
+        return pwr >= id(power_threshold).state;
+      } else {
+        // Staged mode: Running = above low threshold
+        return pwr >= id(threshold_low).state;
+      }
+    on_press:
+      - lambda: 'id(was_running) = true;'
+      - light.turn_on: relay_led
+    on_release:
+      - light.turn_off: relay_led
+      - if:
+          condition:
+            lambda: 'return id(was_running);'
+          then:
+            - binary_sensor.template.publish:
+                id: cycle_complete
+                state: ON
+            - delay: 1s
+            - binary_sensor.template.publish:
+                id: cycle_complete
+                state: OFF
+            - lambda: 'id(was_running) = false;'
+
+  # Cycle Complete - fires momentarily when Running goes false
+  - platform: template
+    name: "Cycle Complete"
+    id: cycle_complete
+    icon: mdi:check-circle
+    device_class: problem
+
+#------------------------------------------------------------------------------
+# State Text Sensor
+#------------------------------------------------------------------------------
+text_sensor:
+  - platform: template
+    name: "State"
+    id: appliance_state
+    icon: mdi:state-machine
+
+#------------------------------------------------------------------------------
+# State Update Script
+#------------------------------------------------------------------------------
+script:
+  - id: update_appliance_state
+    then:
+      - lambda: |-
+          float pwr = id(power).state;
+          if (isnan(pwr)) {
+            id(appliance_state).publish_state("Unknown");
+            return;
+          }
+
+          std::string mode = id(monitor_mode).state;
+
+          if (mode == "Binary") {
+            if (pwr >= id(power_threshold).state) {
+              id(appliance_state).publish_state("Running");
+            } else {
+              id(appliance_state).publish_state("Off");
+            }
+          } else {
+            // Staged mode
+            float high = id(threshold_high).state;
+            float low = id(threshold_low).state;
+
+            if (pwr >= high) {
+              id(appliance_state).publish_state("Active");
+            } else if (pwr >= low) {
+              id(appliance_state).publish_state("Idle");
+            } else {
+              id(appliance_state).publish_state("Off");
+            }
+          }
+
+  # Button press handler
+  - id: on_button_press
+    then:
+      - if:
+          condition:
+            lambda: 'return id(button_enabled).state == "Enabled";'
+          then:
+            - switch.toggle: appliance
+
+#------------------------------------------------------------------------------
+# Power Change Handler
+#------------------------------------------------------------------------------
+interval:
+  - interval: 2s
+    then:
+      - script.execute: update_appliance_state

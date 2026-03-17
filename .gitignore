@@ -1,0 +1,17 @@
+# ESPHome build artifacts
+.esphome/
+__pycache__/
+
+# Secrets - NEVER commit these
+secrets.yaml
+
+# Editor files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db

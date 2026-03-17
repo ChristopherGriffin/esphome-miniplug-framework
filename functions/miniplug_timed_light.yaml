@@ -1,0 +1,533 @@
+#==============================================================================
+# Mini Plug Function: Timed Light
+#==============================================================================
+# File: functions/miniplug_timed_light.yaml
+#
+# Configures the plug as a timed light controller with flexible scheduling.
+# Supports fixed times, sunrise, sunset, or duration-based schedules.
+# Schedule is always active - use miniplug_lamp.yaml for manual-only control.
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - relay_output      : GPIO output for relay
+#       - relay_led         : Internal light for relay status LED
+#       - on_button_press   : Script called when button pressed
+#   - esp_common.yaml providing:
+#       - device_time       : Time component
+#
+# REQUIRED SUBSTITUTIONS:
+#   - friendly_name : Human-readable device name
+#   - latitude      : Location latitude for sun calculations (e.g., "33.4484")
+#   - longitude     : Location longitude for sun calculations (e.g., "-112.0740")
+#
+# PROVIDES:
+#   IDs:
+#     - lamp              : Light entity for the relay
+#     - schedule_enabled  : Switch to enable/disable schedule enforcement
+#     - on_source         : Select for ON time source
+#     - off_source        : Select for OFF time source
+#     - fixed_on_time     : Datetime for fixed ON time
+#     - fixed_off_time    : Datetime for fixed OFF time
+#     - duration_hours    : Number for duration-based OFF
+#     - sunrise_offset    : Number for sunrise offset in minutes (negative = before)
+#     - sunset_offset     : Number for sunset offset in minutes (negative = before)
+#     - actual_on_time    : Text sensor showing calculated ON time
+#     - actual_off_time   : Text sensor showing calculated OFF time
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Lights:
+#     - Lamp              : Main lamp control (on/off)
+#   Switches:
+#     - Schedule Enabled  : Enable/disable schedule enforcement (lamp manual when off)
+#   Selects:
+#     - On Time Source    : Fixed Time, Sunrise, Sunset
+#     - Off Time Source   : Fixed Time, Sunrise, Sunset, Duration
+#   Datetime:
+#     - Fixed On Time     : Fixed ON time (HH:MM picker)
+#     - Fixed Off Time    : Fixed OFF time (HH:MM picker)
+#   Numbers:
+#     - Duration Hours    : Hours after ON to turn OFF (1-24)
+#     - Sunrise Offset Minutes : Offset applied when Sunrise is selected as a source
+#                                Negative = before sunrise, Positive = after sunrise
+#     - Sunset Offset Minutes  : Offset applied when Sunset is selected as a source
+#                                Negative = before sunset, Positive = after sunset
+#   Text Sensors:
+#     - Actual On Time    : Calculated ON time based on source (includes offset)
+#     - Actual Off Time   : Calculated OFF time based on source (includes offset)
+#
+# SCHEDULE EXAMPLES:
+#   1. On at sunrise, off 12 hours later:
+#      - On Source: Sunrise, Off Source: Duration, Duration: 12
+#   2. On at sunrise, off at sunset:
+#      - On Source: Sunrise, Off Source: Sunset
+#   3. On at sunset, off at sunrise (night cycle):
+#      - On Source: Sunset, Off Source: Sunrise
+#   4. On at 8am, off at sunset:
+#      - On Source: Fixed Time, Fixed On Time: 08:00, Off Source: Sunset
+#   5. On at 6am, off at 10pm:
+#      - On Source: Fixed Time, Fixed On Time: 06:00, Off Source: Fixed Time, Fixed Off Time: 22:00
+#   6. On 1 hour before sunrise, off 2 hours after sunset:
+#      - On Source: Sunrise, Sunrise Offset: -60, Off Source: Sunset, Sunset Offset: +120
+#   7. On at sunrise, off 30 minutes before sunset:
+#      - On Source: Sunrise, Off Source: Sunset, Sunset Offset: -30
+#
+# NOTE ON OFFSETS:
+#   Offsets only apply when the corresponding sun event is selected as a source.
+#   Sunrise Offset applies wherever Sunrise is used (ON or OFF source).
+#   Sunset Offset applies wherever Sunset is used (ON or OFF source).
+#   Fixed Time and Duration sources are unaffected by offsets.
+#
+# BEHAVIOR:
+#   - Schedule enforced every minute when Schedule Enabled is on
+#   - When Schedule Enabled is off, lamp behaves as a manual switch
+#   - Manual override works until next scheduled transition (when enabled)
+#   - Button always toggles lamp regardless of schedule state
+#
+# USAGE:
+#   substitutions:
+#     device_name: "timed-light"
+#     friendly_name: "Timed Light"
+#     name_no_dashes: "timed_light"
+#     latitude: "33.4484"
+#     longitude: "-112.0740"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/switchbot_miniplug_W1901400.yaml
+#     function: !include functions/miniplug_timed_light.yaml
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# Sun Component - For sunrise/sunset calculations
+# Note: Requires latitude/longitude substitutions (use negative for western longitude!)
+#------------------------------------------------------------------------------
+sun:
+  latitude: ${latitude}
+  longitude: ${longitude}
+  id: sun_position
+
+#------------------------------------------------------------------------------
+# Light Entity (Relay)
+#------------------------------------------------------------------------------
+light:
+  - platform: binary
+    name: "Lamp"
+    id: lamp
+    output: relay_output
+    restore_mode: RESTORE_DEFAULT_OFF
+    on_turn_on:
+      - light.turn_on: relay_led
+    on_turn_off:
+      - light.turn_off: relay_led
+
+#------------------------------------------------------------------------------
+# Switch Entity to enable or disable schedule
+# When disabled, lamp is fully manual - schedule calculates but does not act
+#------------------------------------------------------------------------------
+switch:
+  - platform: template
+    name: "Schedule Enabled"
+    id: schedule_enabled
+    icon: mdi:calendar-clock
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+
+#------------------------------------------------------------------------------
+# Schedule Source Selects
+#------------------------------------------------------------------------------
+select:
+  - platform: template
+    name: "On Time Source"
+    id: on_source
+    icon: mdi:weather-sunset-up
+    options:
+      - "Fixed Time"
+      - "Sunrise"
+      - "Sunset"
+    initial_option: "Sunrise"
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: recalculate_schedule
+
+  - platform: template
+    name: "Off Time Source"
+    id: off_source
+    icon: mdi:weather-sunset-down
+    options:
+      - "Fixed Time"
+      - "Sunrise"
+      - "Sunset"
+      - "Duration"
+    initial_option: "Duration"
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: recalculate_schedule
+
+#------------------------------------------------------------------------------
+# Schedule Time Configuration
+#------------------------------------------------------------------------------
+datetime:
+  # ON time (used when On Source = Fixed Time)
+  - platform: template
+    name: "Fixed On Time"
+    id: fixed_on_time
+    type: time
+    icon: mdi:clock-start
+    optimistic: true
+    restore_value: true
+    initial_value: "06:00:00"
+    on_value:
+      - script.execute: recalculate_schedule
+
+  # OFF time (used when Off Source = Fixed Time)
+  - platform: template
+    name: "Fixed Off Time"
+    id: fixed_off_time
+    type: time
+    icon: mdi:clock-end
+    optimistic: true
+    restore_value: true
+    initial_value: "18:00:00"
+    on_value:
+      - script.execute: recalculate_schedule
+
+number:
+  # Duration (used when Off Source = Duration)
+  - platform: template
+    name: "Duration Hours"
+    id: duration_hours
+    icon: mdi:timer-sand
+    unit_of_measurement: h
+    entity_category: config
+    mode: slider
+    min_value: 1
+    max_value: 24
+    step: 0.5
+    initial_value: 12
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: recalculate_schedule
+
+  # Sunrise offset - applied whenever Sunrise is selected as ON or OFF source
+  # Negative = before sunrise, Positive = after sunrise
+  - platform: template
+    name: "Sunrise Offset Minutes"
+    id: sunrise_offset
+    icon: mdi:weather-sunset-up
+    unit_of_measurement: min
+    entity_category: config
+    mode: slider
+    min_value: -120
+    max_value: 120
+    step: 5
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: recalculate_schedule
+
+  # Sunset offset - applied whenever Sunset is selected as ON or OFF source
+  # Negative = before sunset, Positive = after sunset
+  - platform: template
+    name: "Sunset Offset Minutes"
+    id: sunset_offset
+    icon: mdi:weather-sunset-down
+    unit_of_measurement: min
+    entity_category: config
+    mode: slider
+    min_value: -120
+    max_value: 120
+    step: 5
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: recalculate_schedule
+
+#------------------------------------------------------------------------------
+# Schedule Text Sensors (for visibility in HA)
+# These always show the calculated times including offsets, regardless of
+# whether the schedule is enabled or disabled.
+#------------------------------------------------------------------------------
+text_sensor:
+  - platform: template
+    name: "Actual On Time"
+    id: actual_on_time
+    icon: mdi:clock-start
+    update_interval: 60s
+    lambda: |-
+      auto now = id(device_time).now();
+      if (!now.is_valid()) return std::string("--:--");
+
+      auto sunrise = id(sun_position).sunrise(0);
+      auto sunset = id(sun_position).sunset(0);
+
+      // Helper to apply offset and wrap around midnight
+      auto apply_offset = [](int minutes, int offset) -> int {
+        minutes += offset;
+        if (minutes < 0) minutes += 1440;
+        if (minutes >= 1440) minutes -= 1440;
+        return minutes;
+      };
+
+      int on_minutes;
+      std::string src = id(on_source).state;
+
+      if (src == "Sunrise") {
+        if (sunrise.has_value()) {
+          on_minutes = apply_offset(
+            sunrise.value().hour * 60 + sunrise.value().minute,
+            (int)id(sunrise_offset).state
+          );
+        } else {
+          return std::string("No sunrise");
+        }
+      } else if (src == "Sunset") {
+        if (sunset.has_value()) {
+          on_minutes = apply_offset(
+            sunset.value().hour * 60 + sunset.value().minute,
+            (int)id(sunset_offset).state
+          );
+        } else {
+          return std::string("No sunset");
+        }
+      } else {
+        on_minutes = id(fixed_on_time).hour * 60 + id(fixed_on_time).minute;
+      }
+
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%02d:%02d", on_minutes / 60, on_minutes % 60);
+      return std::string(buf);
+
+  - platform: template
+    name: "Actual Off Time"
+    id: actual_off_time
+    icon: mdi:clock-end
+    update_interval: 60s
+    lambda: |-
+      auto now = id(device_time).now();
+      if (!now.is_valid()) return std::string("--:--");
+
+      auto sunrise = id(sun_position).sunrise(0);
+      auto sunset = id(sun_position).sunset(0);
+
+      // Helper to apply offset and wrap around midnight
+      auto apply_offset = [](int minutes, int offset) -> int {
+        minutes += offset;
+        if (minutes < 0) minutes += 1440;
+        if (minutes >= 1440) minutes -= 1440;
+        return minutes;
+      };
+
+      // First get ON time (needed for Duration calculation)
+      int on_minutes;
+      std::string on_src = id(on_source).state;
+      if (on_src == "Sunrise") {
+        if (sunrise.has_value()) {
+          on_minutes = apply_offset(
+            sunrise.value().hour * 60 + sunrise.value().minute,
+            (int)id(sunrise_offset).state
+          );
+        } else {
+          return std::string("No sunrise");
+        }
+      } else if (on_src == "Sunset") {
+        if (sunset.has_value()) {
+          on_minutes = apply_offset(
+            sunset.value().hour * 60 + sunset.value().minute,
+            (int)id(sunset_offset).state
+          );
+        } else {
+          return std::string("No sunset");
+        }
+      } else {
+        on_minutes = id(fixed_on_time).hour * 60 + id(fixed_on_time).minute;
+      }
+
+      // Now calculate OFF time
+      int off_minutes;
+      std::string src = id(off_source).state;
+
+      if (src == "Sunrise") {
+        if (sunrise.has_value()) {
+          off_minutes = apply_offset(
+            sunrise.value().hour * 60 + sunrise.value().minute,
+            (int)id(sunrise_offset).state
+          );
+        } else {
+          return std::string("No sunrise");
+        }
+      } else if (src == "Sunset") {
+        if (sunset.has_value()) {
+          off_minutes = apply_offset(
+            sunset.value().hour * 60 + sunset.value().minute,
+            (int)id(sunset_offset).state
+          );
+        } else {
+          return std::string("No sunset");
+        }
+      } else if (src == "Duration") {
+        off_minutes = on_minutes + (int)(id(duration_hours).state * 60);
+        if (off_minutes >= 1440) off_minutes -= 1440;
+      } else {
+        off_minutes = id(fixed_off_time).hour * 60 + id(fixed_off_time).minute;
+      }
+
+      char buf[8];
+      snprintf(buf, sizeof(buf), "%02d:%02d", off_minutes / 60, off_minutes % 60);
+      return std::string(buf);
+
+#------------------------------------------------------------------------------
+# Schedule Enforcement
+#------------------------------------------------------------------------------
+interval:
+  - interval: 1min
+    then:
+      - script.execute: recalculate_schedule
+
+#------------------------------------------------------------------------------
+# Boot-time Schedule Check
+# Delay allows time sync to complete before evaluating schedule
+#------------------------------------------------------------------------------
+esphome:
+  on_boot:
+    priority: -100  # Run late, after other components initialized
+    then:
+      - delay: 5s   # Wait for time sync
+      - script.execute: recalculate_schedule
+
+#------------------------------------------------------------------------------
+# Button Behavior - Toggle lamp manually
+# Works regardless of schedule state (manual override until next transition)
+# The button hardware GPIO is in the hardware package, this defines the behavior
+#------------------------------------------------------------------------------
+script:
+  - id: on_button_press
+    then:
+      - light.toggle: lamp
+
+  # Recalculate schedule and update text sensors
+  # Called on: boot, config change, every minute
+  # Text sensors always update. Lamp only changes if schedule_enabled is on.
+  - id: recalculate_schedule
+    then:
+      - lambda: |-
+          auto now = id(device_time).now();
+          if (!now.is_valid()) {
+            ESP_LOGW("timed_light", "Time not valid, skipping schedule check");
+            return;
+          }
+
+          int current_minutes = now.hour * 60 + now.minute;
+          int on_minutes, off_minutes;
+
+          auto sunrise = id(sun_position).sunrise(0);
+          auto sunset = id(sun_position).sunset(0);
+
+          // Helper to apply offset and wrap around midnight
+          auto apply_offset = [](int minutes, int offset) -> int {
+            minutes += offset;
+            if (minutes < 0) minutes += 1440;
+            if (minutes >= 1440) minutes -= 1440;
+            return minutes;
+          };
+
+          if (sunrise.has_value() && sunset.has_value()) {
+            ESP_LOGD("timed_light", "Sun times - Sunrise: %02d:%02d, Sunset: %02d:%02d",
+              sunrise.value().hour, sunrise.value().minute,
+              sunset.value().hour, sunset.value().minute);
+          }
+
+          // Calculate ON time
+          std::string on_src = id(on_source).state;
+
+          if (on_src == "Sunrise") {
+            if (!sunrise.has_value()) {
+              ESP_LOGW("timed_light", "Sunrise not available");
+              return;
+            }
+            on_minutes = apply_offset(
+              sunrise.value().hour * 60 + sunrise.value().minute,
+              (int)id(sunrise_offset).state
+            );
+          } else if (on_src == "Sunset") {
+            if (!sunset.has_value()) {
+              ESP_LOGW("timed_light", "Sunset not available");
+              return;
+            }
+            on_minutes = apply_offset(
+              sunset.value().hour * 60 + sunset.value().minute,
+              (int)id(sunset_offset).state
+            );
+          } else {
+            on_minutes = id(fixed_on_time).hour * 60 + id(fixed_on_time).minute;
+          }
+
+          // Calculate OFF time
+          std::string off_src = id(off_source).state;
+
+          if (off_src == "Sunrise") {
+            if (!sunrise.has_value()) {
+              ESP_LOGW("timed_light", "Sunrise not available");
+              return;
+            }
+            off_minutes = apply_offset(
+              sunrise.value().hour * 60 + sunrise.value().minute,
+              (int)id(sunrise_offset).state
+            );
+          } else if (off_src == "Sunset") {
+            if (!sunset.has_value()) {
+              ESP_LOGW("timed_light", "Sunset not available");
+              return;
+            }
+            off_minutes = apply_offset(
+              sunset.value().hour * 60 + sunset.value().minute,
+              (int)id(sunset_offset).state
+            );
+          } else if (off_src == "Duration") {
+            off_minutes = on_minutes + (int)(id(duration_hours).state * 60);
+            if (off_minutes >= 1440) off_minutes -= 1440;  // Wrap past midnight
+          } else {
+            off_minutes = id(fixed_off_time).hour * 60 + id(fixed_off_time).minute;
+          }
+
+          // Update text sensors immediately (always, even if schedule disabled)
+          char buf[8];
+          snprintf(buf, sizeof(buf), "%02d:%02d", on_minutes / 60, on_minutes % 60);
+          id(actual_on_time).publish_state(buf);
+          snprintf(buf, sizeof(buf), "%02d:%02d", off_minutes / 60, off_minutes % 60);
+          id(actual_off_time).publish_state(buf);
+
+          ESP_LOGI("timed_light", "Schedule: ON=%02d:%02d, OFF=%02d:%02d, Current=%02d:%02d",
+            on_minutes/60, on_minutes%60, off_minutes/60, off_minutes%60, now.hour, now.minute);
+
+          // Determine if lamp should be on
+          bool should_be_on;
+          if (on_minutes <= off_minutes) {
+            // Normal case: ON before OFF in same day (e.g., 6am to 6pm)
+            should_be_on = (current_minutes >= on_minutes && current_minutes < off_minutes);
+          } else {
+            // Overnight case: ON after OFF (e.g., 8pm to 8am)
+            should_be_on = (current_minutes >= on_minutes || current_minutes < off_minutes);
+          }
+
+          // Apply state if different - only if schedule is enabled
+          if (!id(schedule_enabled).state) {
+            ESP_LOGI("timed_light", "Schedule disabled, skipping state change");
+            return;
+          }
+
+          bool is_on = id(lamp).current_values.is_on();
+          if (should_be_on && !is_on) {
+            auto call = id(lamp).turn_on();
+            call.perform();
+            ESP_LOGI("timed_light", "Schedule ON at %02d:%02d", now.hour, now.minute);
+          } else if (!should_be_on && is_on) {
+            auto call = id(lamp).turn_off();
+            call.perform();
+            ESP_LOGI("timed_light", "Schedule OFF at %02d:%02d", now.hour, now.minute);
+          }

@@ -1,0 +1,271 @@
+#==============================================================================
+# Mini Plug Function: Heater Control
+#==============================================================================
+# File: functions/miniplug_heater.yaml
+#
+# Configures the plug as a heater controller with autonomous freeze protection.
+# Monitors power draw to detect heating state and fault conditions.
+# Auto-turns on when Home Assistant freeze_alert is active.
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - relay_output      : GPIO output for relay
+#       - relay_led         : Internal light for relay status LED
+#       - on_button_press   : Script called when button pressed
+#       - power             : Power sensor (W)
+#
+# REQUIRED:
+#   - Home Assistant entity: input_boolean.freeze_alert
+#
+# PROVIDES:
+#   IDs:
+#     - heater              : Switch entity for relay
+#     - freeze_alert        : Binary sensor imported from HA
+#     - heating_active      : Binary sensor - ON when actually heating
+#     - heater_undercurrent : Binary sensor - ON when relay on but power too low
+#     - heater_overcurrent  : Binary sensor - LATCHES ON when power exceeds max
+#     - power_threshold_min : Number entity for undercurrent threshold
+#     - power_threshold_max : Number entity for overcurrent threshold
+#     - power_monitoring_enabled : Switch to enable/disable power monitoring
+#     - overcurrent_reset   : Button to clear latched overcurrent fault
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Switches:
+#     - Heater              : Main heater control (device_class: switch)
+#     - Power Monitoring    : Enable/disable power fault detection
+#   Binary Sensors:
+#     - Freeze Alert        : Imported from HA (device_class: cold)
+#     - Heating             : True when heating confirmed (device_class: heat)
+#     - Undercurrent        : True when relay on but power too low (device_class: problem)
+#     - Overcurrent         : LATCHES True when power exceeds max (device_class: problem)
+#   Numbers:
+#     - Power Min Threshold : Minimum watts - below = undercurrent (default: 100W)
+#     - Power Max Threshold : Maximum watts - above = overcurrent (default: 1500W)
+#   Buttons:
+#     - Reset Overcurrent   : Clear the latched overcurrent fault
+#
+# POWER MONITORING BEHAVIOR:
+#   - OVERCURRENT (above max): Immediate relay shutoff, LATCHES fault until manually reset
+#   - NORMAL (between min and max): No alerts, normal operation
+#   - UNDERCURRENT (below min): Flags fault after 30s delay, clears when relay off
+#   - Power monitoring can be disabled for heaters with built-in thermostats
+#
+# FREEZE PROTECTION BEHAVIOR:
+#   - Restore mode: ALWAYS_OFF (safe default for heaters)
+#   - LED follows relay state
+#   - Auto-ON when freeze_alert is true (checked every 30s)
+#   - Auto-OFF when freeze_alert is false
+#   - Button can toggle manually, but freeze protection re-enables within 30s
+#
+# USAGE:
+#   substitutions:
+#     device_name: "garage-heater"
+#     friendly_name: "Garage Heater"
+#     name_no_dashes: "garage_heater"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/switchbot_miniplug_W1901400.yaml
+#     function: !include functions/miniplug_heater.yaml
+#
+# DEBUGGING:
+#   Check ESPHome logs for:
+#     - "OVERCURRENT!" emergency shutoffs (fault latches until reset)
+#     - "UNDERCURRENT" heat source failures
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# Globals - Latching fault state
+#------------------------------------------------------------------------------
+globals:
+  - id: overcurrent_latched
+    type: bool
+    restore_value: yes
+    initial_value: 'false'
+
+#------------------------------------------------------------------------------
+# Heater Switch (Relay)
+#------------------------------------------------------------------------------
+switch:
+  - platform: output
+    name: "Heater"
+    id: heater
+    output: relay_output
+    device_class: switch
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      - light.turn_on: relay_led
+    on_turn_off:
+      - light.turn_off: relay_led
+
+  # Power monitoring enable/disable
+  # Disable for heaters with built-in thermostatic controls
+  - platform: template
+    name: "Power Monitoring"
+    id: power_monitoring_enabled
+    icon: mdi:flash-alert-outline
+    entity_category: config
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+#------------------------------------------------------------------------------
+# Binary Sensors
+#------------------------------------------------------------------------------
+binary_sensor:
+  # Import freeze alert from Home Assistant
+  - platform: homeassistant
+    id: freeze_alert
+    entity_id: input_boolean.freeze_alert
+    name: "Freeze Alert"
+    device_class: cold
+    on_press:
+      - logger.log: "Freeze Alert ACTIVATED - turning on heater"
+      - switch.turn_on: heater
+    on_release:
+      - logger.log: "Freeze Alert CLEARED - turning off heater"
+      - switch.turn_off: heater
+
+  # Heating active - relay ON and power in normal range
+  - platform: template
+    name: "Heating"
+    id: heating_active
+    device_class: heat
+    lambda: |-
+      if (!id(heater).state) return false;
+      if (!id(power_monitoring_enabled).state) return true;  // Assume heating if monitoring disabled
+      float pwr = id(power).state;
+      return pwr >= id(power_threshold_min).state && pwr <= id(power_threshold_max).state;
+
+  # Undercurrent - relay ON but power below minimum threshold
+  # Indicates heat source failure (element burned out, disconnected, etc.)
+  # 30s delay allows heater startup time before declaring fault
+  - platform: template
+    name: "Undercurrent"
+    id: heater_undercurrent
+    device_class: problem
+    icon: mdi:flash-off
+    filters:
+      - delayed_on: 30s
+      - delayed_off: 0s
+    lambda: |-
+      if (!id(power_monitoring_enabled).state) return false;  // Disabled
+      if (!id(heater).state) return false;  // Relay off, no fault
+      return id(power).state < id(power_threshold_min).state;
+
+  # Overcurrent - LATCHING fault when power exceeds maximum threshold
+  # Stays ON until manually reset via button - for troubleshooting history
+  - platform: template
+    name: "Overcurrent"
+    id: heater_overcurrent
+    device_class: problem
+    icon: mdi:flash-alert
+    lambda: |-
+      return id(overcurrent_latched);
+
+#------------------------------------------------------------------------------
+# Reset Button for Overcurrent Fault
+#------------------------------------------------------------------------------
+button:
+  - platform: template
+    name: "Reset Overcurrent"
+    id: overcurrent_reset
+    icon: mdi:restart-alert
+    entity_category: config
+    on_press:
+      - lambda: 'id(overcurrent_latched) = false;'
+      - logger.log: "Overcurrent fault cleared"
+
+#------------------------------------------------------------------------------
+# Power Threshold Configuration
+#------------------------------------------------------------------------------
+number:
+  # Minimum power threshold - below this = undercurrent fault
+  - platform: template
+    name: "Power Min Threshold"
+    id: power_threshold_min
+    icon: mdi:flash-off
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 500
+    step: 10
+    initial_value: 100
+    optimistic: true
+    restore_value: true
+
+  # Maximum power threshold - above this = overcurrent emergency
+  - platform: template
+    name: "Power Max Threshold"
+    id: power_threshold_max
+    icon: mdi:flash-alert
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 100
+    max_value: 3000
+    step: 50
+    initial_value: 1500
+    optimistic: true
+    restore_value: true
+
+#------------------------------------------------------------------------------
+# Power Monitoring & Freeze Protection
+#------------------------------------------------------------------------------
+interval:
+  # Fast check for overcurrent - runs every 2s for safety
+  - interval: 2s
+    then:
+      - if:
+          condition:
+            and:
+              - switch.is_on: power_monitoring_enabled
+              - switch.is_on: heater
+              - lambda: 'return id(power).state > id(power_threshold_max).state;'
+          then:
+            - lambda: |-
+                id(overcurrent_latched) = true;
+                ESP_LOGE("heater", "OVERCURRENT! Power: %.1fW exceeds max: %.0fW - EMERGENCY SHUTOFF",
+                  id(power).state, id(power_threshold_max).state);
+            - switch.turn_off: heater
+
+  # Freeze protection & undercurrent logging - runs every 30s
+  - interval: 30s
+    then:
+      # Log undercurrent warning (actual fault detection is in binary_sensor with delay)
+      - if:
+          condition:
+            and:
+              - switch.is_on: power_monitoring_enabled
+              - switch.is_on: heater
+              - lambda: 'return id(power).state < id(power_threshold_min).state;'
+          then:
+            - lambda: |-
+                ESP_LOGW("heater", "UNDERCURRENT: Power %.1fW below min %.0fW - Check heat source",
+                  id(power).state, id(power_threshold_min).state);
+
+      # Freeze protection enforcement
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_on: freeze_alert
+              - switch.is_off: heater
+          then:
+            - logger.log: "Freeze protection: Re-enabling heater"
+            - switch.turn_on: heater
+
+#------------------------------------------------------------------------------
+# Button Behavior - Toggle heater manually
+# Also clears overcurrent fault so physical reset is possible without HA
+# Note: During freeze alert, heater will re-enable within 30s
+#------------------------------------------------------------------------------
+script:
+  - id: on_button_press
+    then:
+      - if:
+          condition:
+            lambda: 'return id(overcurrent_latched);'
+          then:
+            - lambda: 'id(overcurrent_latched) = false;'
+            - logger.log: "Overcurrent fault cleared via button"
+      - switch.toggle: heater

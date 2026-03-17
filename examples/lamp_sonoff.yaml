@@ -1,0 +1,17 @@
+#==============================================================================
+# Example: Simple Lamp on Sonoff S31
+#==============================================================================
+# Same lamp function, different hardware. The function package doesn't care
+# whether it's running on ESP8266 or ESP32 - the hardware profile handles it.
+#==============================================================================
+
+substitutions:
+  device_name: "bedroom-lamp"
+  device_description: "Bedroom nightstand lamp"
+  friendly_name: "Bedroom Lamp"
+  name_no_dashes: "bedroom_lamp"
+
+packages:
+  base: !include ../common/esp_common.yaml
+  hardware: !include ../hardware/sonoff_s31.yaml
+  function: !include ../functions/miniplug_lamp.yaml

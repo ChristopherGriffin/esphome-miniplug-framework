@@ -1,0 +1,29 @@
+#==============================================================================
+# Example: Heater with Freeze Protection on SwitchBot Mini Plug
+#==============================================================================
+# Autonomous freeze protection heater controller. When Home Assistant's
+# input_boolean.freeze_alert activates, the heater turns on automatically.
+# Includes overcurrent/undercurrent fault detection.
+#
+# PREREQUISITES:
+#   Create in Home Assistant: input_boolean.freeze_alert
+#   (or use an automation that sets it based on weather forecast)
+#
+# POWER THRESHOLDS:
+#   Adjust min/max for your specific heater. A typical 1500W space heater:
+#     - Min: 100W (below this = element failure / disconnected)
+#     - Max: 1600W (above this = something is wrong)
+#   A heater with a built-in thermostat may cycle on/off - disable power
+#   monitoring via the "Power Monitoring" switch in HA if needed.
+#==============================================================================
+
+substitutions:
+  device_name: "garage-heater"
+  device_description: "Garage space heater with freeze protection"
+  friendly_name: "Garage Heater"
+  name_no_dashes: "garage_heater"
+
+packages:
+  base: !include ../common/esp_common.yaml
+  hardware: !include ../hardware/switchbot_miniplug_W1901400.yaml
+  function: !include ../functions/miniplug_heater.yaml

@@ -1,0 +1,30 @@
+#==============================================================================
+# Example: Appliance Monitor on Sonoff S31
+#==============================================================================
+# Monitors an appliance's power consumption to detect running/idle/off states.
+# The S31's CSE7766 power monitoring is well-suited for this - accurate and
+# responsive enough to catch state transitions.
+#
+# USE CASES:
+#   Binary mode (default):
+#     Dishwasher, washing machine, dryer - simple running/off detection.
+#     Set "Power Threshold" to just above the appliance's idle draw.
+#
+#   Staged mode:
+#     Coffee maker (brewing vs warming vs off), 3D printer (heating vs
+#     printing vs idle). Set thresholds to distinguish the states.
+#
+# The "Cycle Complete" binary sensor fires momentarily when the appliance
+# stops running - use this to trigger HA notifications ("Dishwasher done!").
+#==============================================================================
+
+substitutions:
+  device_name: "dishwasher"
+  device_description: "Dishwasher power monitor"
+  friendly_name: "Dishwasher"
+  name_no_dashes: "dishwasher"
+
+packages:
+  base: !include ../common/esp_common.yaml
+  hardware: !include ../hardware/sonoff_s31.yaml
+  function: !include ../functions/miniplug_appliance.yaml

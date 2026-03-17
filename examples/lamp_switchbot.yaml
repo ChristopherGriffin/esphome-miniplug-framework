@@ -1,0 +1,19 @@
+#==============================================================================
+# Example: Simple Lamp on SwitchBot Mini Plug
+#==============================================================================
+# A basic on/off lamp. The plug exposes a Light entity to Home Assistant,
+# the physical button toggles it, and you get power monitoring for free.
+#
+# To use: copy this file, change the substitutions, compile, and flash.
+#==============================================================================
+
+substitutions:
+  device_name: "living-room-lamp"
+  device_description: "Living room floor lamp"
+  friendly_name: "Living Room Lamp"
+  name_no_dashes: "living_room_lamp"
+
+packages:
+  base: !include ../common/esp_common.yaml
+  hardware: !include ../hardware/switchbot_miniplug_W1901400.yaml
+  function: !include ../functions/miniplug_lamp.yaml

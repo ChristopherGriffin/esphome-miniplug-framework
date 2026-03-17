@@ -1,0 +1,303 @@
+#==============================================================================
+# Sonoff S31 - Hardware Package
+#==============================================================================
+# File: hardware/sonoff_s31.yaml
+#
+# Hardware-specific configuration for Sonoff S31 (ESP8266).
+# Defines board, pins, power monitoring, and raw outputs.
+# Combine with a function package (lamp, heater, timed_light, appliance, etc.).
+#
+# DEPENDENCIES:
+#   - common/esp_common.yaml (provides connectivity, sensors, device_time)
+#
+# REQUIRED SUBSTITUTIONS:
+#   - device_name        : ESPHome device name (lowercase, dashes ok)
+#   - friendly_name      : Human-readable device name
+#   - name_no_dashes     : Device name without dashes for IDs
+#   - device_description : Device description/comment
+#
+# PROVIDES:
+#   IDs:
+#     - relay_output      : GPIO output for relay
+#     - relay_led         : Dummy light for function package compatibility
+#     - power             : Power sensor (W)
+#     - current           : Current sensor (A)
+#     - voltage           : Voltage sensor (V)
+#     - energy            : Energy sensor (kWh)
+#
+# REQUIRES FROM FUNCTION PACKAGE:
+#   - on_button_press     : Script called when button pressed
+#
+# HARDWARE PINOUT (S31):
+#   - GPIO0  : Button (inverted, pullup)
+#   - GPIO12 : Relay (Red LED is hardware-coupled to relay)
+#   - GPIO13 : Green LED (inverted) - Connection Status Indicator
+#   - RX     : CSE7766 UART
+#
+# LED BEHAVIOR:
+#   Red LED (Relay Status):
+#     - Hardware-coupled to relay (not software controllable)
+#     - ON when relay is ON, OFF when relay is OFF
+#
+#   Green LED (Connection Status):
+#     - Fast blink (0.5s): WiFi disconnected
+#     - Solid ON: WiFi connected, API disconnected
+#     - Slow glow (2s): WiFi connected, API connected
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Sensors:
+#     - Power          : Real-time power (W)
+#     - Current        : Current draw (A)
+#     - Voltage        : Line voltage (V)
+#     - Energy         : Cumulative energy (kWh)
+#     - Power Factor   : Power factor
+#     - Daily Energy   : Daily cumulative energy (kWh)
+#
+# USAGE:
+#   substitutions:
+#     device_name: "my-lamp"
+#     friendly_name: "My Lamp"
+#     name_no_dashes: "my_lamp"
+#     device_description: "Living room lamp on Sonoff S31"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/sonoff_s31.yaml
+#     function: !include functions/miniplug_lamp.yaml
+#==============================================================================
+
+substitutions:
+  # Hardware pins - S31 specific
+  pin_button: GPIO0
+  pin_relay: GPIO12
+  pin_led_green: GPIO13
+
+  # Update intervals - can be overridden in device config
+  # For heater monitoring, faster updates recommended (5s default)
+  # For lamp/appliance monitoring, can increase to 30s or 60s to reduce traffic
+  power_update_interval: "5s"
+
+#------------------------------------------------------------------------------
+# ESP8266 Board Configuration
+#------------------------------------------------------------------------------
+esp8266:
+  board: esp12e
+  early_pin_init: false
+  restore_from_flash: false
+
+esphome:
+  name: ${device_name}
+  comment: ${device_description}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Connectivity Callbacks
+# Note: logger baud_rate: 0 required - UART is used for power monitoring
+#------------------------------------------------------------------------------
+logger:
+  baud_rate: 0
+  logs:
+    sensor: DEBUG
+    light: INFO    # Silence DEBUG spam from status LED glow effect
+    cse7766: WARN  # Silence power factor debug spam
+
+api:
+  on_client_connected:
+    - script.execute: update_status_led
+  on_client_disconnected:
+    - script.execute: update_status_led
+
+wifi:
+  on_connect:
+    - script.execute: update_status_led
+  on_disconnect:
+    - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# UART for power monitoring chip (CSE7766)
+#------------------------------------------------------------------------------
+uart:
+  rx_pin: RX
+  baud_rate: 4800
+  parity: EVEN
+
+#------------------------------------------------------------------------------
+# Hardware Outputs
+#------------------------------------------------------------------------------
+output:
+  # Relay output (Red LED is hardware-coupled, not controllable separately)
+  - platform: gpio
+    id: relay_output
+    pin: ${pin_relay}
+
+  # Green LED - Connection Status (PWM for glow effect)
+  - platform: esp8266_pwm
+    id: status_led_output
+    pin:
+      number: ${pin_led_green}
+      inverted: true
+    frequency: 1000Hz
+
+  # Dummy output for relay_led compatibility with function packages
+  # On S31, the red relay LED is hardware-coupled and not software controllable
+  - platform: template
+    id: relay_led_output
+    type: binary
+    write_action:
+      - logger.log:
+          level: DEBUG
+          format: "Relay LED state: %d (S31 LED is hardware-coupled)"
+          args: ['state']
+
+#------------------------------------------------------------------------------
+# Connection Status LED (Green) - Managed by status script
+#------------------------------------------------------------------------------
+light:
+  - platform: monochromatic
+    id: status_led
+    output: status_led_output
+    internal: true
+    default_transition_length: 0ms
+    effects:
+      # Fast blink for WiFi disconnected
+      - strobe:
+          name: "Fast Blink"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      # Slow glow for fully connected
+      - lambda:
+          name: "Slow Glow"
+          update_interval: 40ms
+          lambda: |-
+            static float phase = 0;
+            phase += 0.05;  // ~2s full cycle (50 steps * 40ms * 2)
+            if (phase > 3.14159) phase = -3.14159;
+            float brightness = (sin(phase) + 1.0) / 2.0;  // 0.0 to 1.0
+            auto call = id(status_led).turn_on();
+            call.set_brightness(brightness);
+            call.set_transition_length(0);
+            call.perform();
+
+  # Dummy relay_led for function package compatibility
+  # On S31, the red relay LED is hardware-coupled (not software controllable)
+  # This allows function packages to call relay_led.turn_on/off without error
+  - platform: binary
+    id: relay_led
+    output: relay_led_output
+    internal: true
+
+#------------------------------------------------------------------------------
+# Status LED Control Script
+#------------------------------------------------------------------------------
+script:
+  - id: update_status_led
+    then:
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - light.turn_on:
+                id: status_led
+                brightness: 100%
+                effect: "Fast Blink"
+          else:
+            - if:
+                condition:
+                  api.connected:
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: "Slow Glow"
+                else:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: none
+
+#------------------------------------------------------------------------------
+# Physical Button (GPIO0)
+#------------------------------------------------------------------------------
+binary_sensor:
+  - platform: gpio
+    id: physical_button
+    internal: true
+    pin:
+      number: ${pin_button}
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+    on_press:
+      - script.execute: on_button_press
+
+#------------------------------------------------------------------------------
+# Periodic Status Check (backup for missed events)
+#------------------------------------------------------------------------------
+interval:
+  - interval: 30s
+    then:
+      - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Power Monitoring (CSE7766)
+#------------------------------------------------------------------------------
+sensor:
+  - platform: cse7766
+    current:
+      name: "Current"
+      id: current
+      unit_of_measurement: A
+      accuracy_decimals: 2
+      state_class: measurement
+      device_class: current
+      filters:
+        - throttle_average: ${power_update_interval}
+    voltage:
+      name: "Voltage"
+      id: voltage
+      unit_of_measurement: V
+      accuracy_decimals: 2
+      state_class: measurement
+      device_class: voltage
+      filters:
+        - throttle_average: ${power_update_interval}
+    power:
+      name: "Power"
+      id: power
+      unit_of_measurement: W
+      accuracy_decimals: 2
+      state_class: measurement
+      device_class: power
+      filters:
+        - throttle_average: ${power_update_interval}
+    energy:
+      name: "Energy"
+      id: energy
+      unit_of_measurement: kWh
+      accuracy_decimals: 2
+      state_class: total_increasing
+      device_class: energy
+      filters:
+        - throttle: ${power_update_interval}
+    power_factor:
+      name: "Power Factor"
+      accuracy_decimals: 2
+      state_class: measurement
+      device_class: power_factor
+      filters:
+        - throttle_average: ${power_update_interval}
+
+  - platform: total_daily_energy
+    name: "Daily Energy"
+    power_id: power
+    accuracy_decimals: 2

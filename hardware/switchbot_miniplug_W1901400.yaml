@@ -1,0 +1,319 @@
+#==============================================================================
+# SwitchBot Mini Plug W1901400 - Hardware Package
+#==============================================================================
+# File: hardware/switchbot_miniplug_W1901400.yaml
+#
+# Hardware-specific configuration for SwitchBot Mini Plug W1901400 (ESP32-C3).
+# Defines board, pins, power monitoring, BLE proxy, and raw outputs.
+# Combine with a function package (lamp, heater, timed_light, etc.).
+#
+# DEPENDENCIES:
+#   - common/esp_common.yaml (provides connectivity, sensors, device_time)
+#
+# REQUIRED SUBSTITUTIONS:
+#   - device_name        : ESPHome device name (lowercase, dashes ok)
+#   - friendly_name      : Human-readable device name
+#   - name_no_dashes     : Device name without dashes for IDs
+#   - device_description : Device description/comment
+#
+# PROVIDES:
+#   IDs:
+#     - relay_output      : GPIO output for relay
+#     - relay_led         : Internal light - call to sync with relay state
+#     - power             : Power sensor (W)
+#     - current           : Current sensor (A)
+#     - voltage           : Voltage sensor (V)
+#     - energy            : Energy sensor (kWh)
+#
+# REQUIRES FROM FUNCTION PACKAGE:
+#   - on_button_press     : Script called when button pressed
+#
+# HARDWARE PINOUT (W1901400):
+#   - GPIO02 : Button (inverted, pullup)
+#   - GPIO06 : Relay
+#   - GPIO07 : White LED (inverted) - Relay Status Indicator
+#   - GPIO08 : Blue LED (inverted) - Connection Status Indicator
+#   - GPIO18 : BL0937 CF
+#   - GPIO19 : BL0937 CF1
+#   - GPIO20 : BL0937 SEL (inverted)
+#
+# LED BEHAVIOR:
+#   White LED (Relay Status):
+#     - ON when relay is ON
+#     - OFF when relay is OFF
+#     - Function packages call relay_led.turn_on/off to sync
+#
+#   Blue LED (Connection Status):
+#     - Fast blink (0.5s): WiFi disconnected
+#     - Solid ON: WiFi connected, API disconnected
+#     - Slow glow (2s): WiFi connected, API connected
+#
+# BONUS FEATURES:
+#   - BLE Proxy: Acts as a Bluetooth proxy for Home Assistant
+#     (allows HA to communicate with BLE devices through this plug)
+#   - Internal Temperature: Reports ESP32-C3 die temperature
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Sensors:
+#     - Power         : Real-time power (W)
+#     - Current       : Current draw (A)
+#     - Voltage       : Line voltage (V)
+#     - Energy        : Cumulative energy (kWh)
+#     - Daily Energy  : Daily cumulative energy (kWh)
+#     - Internal Temp : ESP32 die temperature
+#
+# USAGE:
+#   substitutions:
+#     device_name: "my-lamp"
+#     friendly_name: "My Lamp"
+#     name_no_dashes: "my_lamp"
+#     device_description: "Living room lamp on SwitchBot Mini Plug"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/switchbot_miniplug_W1901400.yaml
+#     function: !include functions/miniplug_lamp.yaml
+#==============================================================================
+
+substitutions:
+  # Hardware pins - W1901400 specific
+  pin_button: GPIO02
+  pin_relay: GPIO06
+  pin_led_white: GPIO07
+  pin_led_blue: GPIO08
+  pin_hlw_cf: GPIO18
+  pin_hlw_cf1: GPIO19
+  pin_hlw_sel: GPIO20
+
+  # Power monitoring calibration
+  voltage_divider: "1467"
+  current_resistor: "0.001"
+
+  # Update interval - can be overridden in device config
+  power_update_interval: "2s"
+
+#------------------------------------------------------------------------------
+# ESP32-C3 Board Configuration
+#------------------------------------------------------------------------------
+esp32:
+  board: esp32-c3-devkitm-1
+  variant: ESP32C3
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      CONFIG_BT_BLE_50_FEATURES_SUPPORTED: y
+      CONFIG_BT_BLE_42_FEATURES_SUPPORTED: y
+      CONFIG_ESP_TASK_WDT_TIMEOUT_S: "10"
+
+esphome:
+  name: ${device_name}
+  comment: ${device_description}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Connectivity Callbacks
+#------------------------------------------------------------------------------
+api:
+  on_client_connected:
+    - script.execute: update_status_led
+  on_client_disconnected:
+    - script.execute: update_status_led
+
+wifi:
+  on_connect:
+    - script.execute: update_status_led
+  on_disconnect:
+    - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Bluetooth LE Proxy
+# Allows Home Assistant to communicate with BLE devices through this plug.
+# Comment out this section if you don't need BLE proxy functionality.
+#------------------------------------------------------------------------------
+esp32_ble_tracker:
+  scan_parameters:
+    interval: 1100ms
+    window: 1100ms
+    active: true
+
+bluetooth_proxy:
+  active: true
+
+#------------------------------------------------------------------------------
+# Hardware Outputs
+#------------------------------------------------------------------------------
+output:
+  # Relay output
+  - platform: gpio
+    id: relay_output
+    pin: ${pin_relay}
+
+  # White LED - Relay Status (internal, coupled to relay by function packages)
+  - platform: gpio
+    id: relay_led_output
+    pin:
+      number: ${pin_led_white}
+      inverted: true
+
+  # Blue LED - Connection Status (PWM for glow effect)
+  - platform: ledc
+    id: status_led_output
+    pin:
+      number: ${pin_led_blue}
+      inverted: true
+    frequency: 1000Hz
+
+#------------------------------------------------------------------------------
+# LEDs
+#------------------------------------------------------------------------------
+light:
+  # Relay Status LED (White) - Internal, synced by function packages
+  - platform: binary
+    id: relay_led
+    output: relay_led_output
+    internal: true
+
+  # Connection Status LED (Blue) - Managed by status script
+  - platform: monochromatic
+    id: status_led
+    output: status_led_output
+    internal: true
+    default_transition_length: 0ms
+    effects:
+      # Fast blink for WiFi disconnected
+      - strobe:
+          name: "Fast Blink"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      # Slow glow for fully connected
+      - lambda:
+          name: "Slow Glow"
+          update_interval: 40ms
+          lambda: |-
+            static float phase = 0;
+            phase += 0.05;  // ~2s full cycle (50 steps * 40ms * 2)
+            if (phase > 3.14159) phase = -3.14159;
+            float brightness = (sin(phase) + 1.0) / 2.0;  // 0.0 to 1.0
+            auto call = id(status_led).turn_on();
+            call.set_brightness(brightness);
+            call.set_transition_length(0);
+            call.perform();
+
+#------------------------------------------------------------------------------
+# Status LED Control Script
+#------------------------------------------------------------------------------
+script:
+  - id: update_status_led
+    then:
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - light.turn_on:
+                id: status_led
+                brightness: 100%
+                effect: "Fast Blink"
+          else:
+            - if:
+                condition:
+                  api.connected:
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: "Slow Glow"
+                else:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: none
+
+#------------------------------------------------------------------------------
+# Physical Button (GPIO02)
+#------------------------------------------------------------------------------
+binary_sensor:
+  - platform: gpio
+    id: physical_button
+    internal: true
+    pin:
+      number: ${pin_button}
+      mode: INPUT_PULLUP
+      inverted: true
+    filters:
+      - delayed_on: 10ms
+    on_press:
+      - script.execute: on_button_press
+
+#------------------------------------------------------------------------------
+# Periodic Status Check (backup for missed events)
+#------------------------------------------------------------------------------
+interval:
+  - interval: 30s
+    then:
+      - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Power Monitoring (BL0937)
+#------------------------------------------------------------------------------
+sensor:
+  - platform: hlw8012
+    id: hlw_sensor
+    sel_pin:
+      number: ${pin_hlw_sel}
+      inverted: true
+    cf_pin: ${pin_hlw_cf}
+    cf1_pin: ${pin_hlw_cf1}
+    model: BL0937
+    voltage_divider: ${voltage_divider}
+    current_resistor: ${current_resistor}
+    power:
+      name: "Power"
+      id: power
+      unit_of_measurement: W
+      accuracy_decimals: 1
+      state_class: measurement
+      device_class: power
+    current:
+      name: "Current"
+      id: current
+      unit_of_measurement: A
+      accuracy_decimals: 2
+      state_class: measurement
+      device_class: current
+    voltage:
+      name: "Voltage"
+      id: voltage
+      unit_of_measurement: V
+      accuracy_decimals: 1
+      state_class: measurement
+      device_class: voltage
+    energy:
+      name: "Energy"
+      id: energy
+      unit_of_measurement: kWh
+      accuracy_decimals: 3
+      state_class: total_increasing
+      device_class: energy
+      filters:
+        - multiply: 0.001
+    update_interval: ${power_update_interval}
+    change_mode_every: 4
+
+  - platform: internal_temperature
+    name: "Internal Temp"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  - platform: total_daily_energy
+    name: "Daily Energy"
+    power_id: power
+    accuracy_decimals: 2
