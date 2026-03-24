@@ -11,6 +11,8 @@ The simplest function — turns a smart plug into a controllable light. The rela
 
 That's it. No monitoring, no scheduling, no thresholds. If you just need a plug that turns something on and off, this is the one.
 
+> **Note:** `timed_light` is essentially this function with a schedule engine added on top. If you think you might want scheduling later, it's worth knowing the two are structurally identical — switching over is just a package swap plus adding your latitude/longitude. See [README_TIMED_LIGHT.md](README_TIMED_LIGHT.md).
+
 ## Home Assistant Entities
 
 | Entity | Type | Description |

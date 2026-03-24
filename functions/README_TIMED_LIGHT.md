@@ -2,6 +2,8 @@
 
 A scheduled light controller with flexible time source options. Supports sunrise/sunset-aware scheduling, fixed times, duration-based off times, and configurable offsets — all adjustable from Home Assistant without reflashing.
 
+> **Note:** This function is structurally identical to `lamp` — it exposes the same `light` entity with the same button behavior. The only addition is the schedule engine and its supporting entities. If you don't need scheduling, [README_LAMP.md](README_LAMP.md) is the simpler starting point.
+
 ## What It Does
 
 - Exposes the relay as a **Light** entity for manual control
