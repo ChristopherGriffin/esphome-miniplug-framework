@@ -57,3 +57,7 @@ script:
   - id: on_button_press
     then:
       - light.toggle: lamp
+
+  - id: on_button_hold
+    then:
+      - logger.log: "Long press (no action defined for lamp function)"

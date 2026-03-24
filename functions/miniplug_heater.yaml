@@ -269,3 +269,7 @@ script:
             - lambda: 'id(overcurrent_latched) = false;'
             - logger.log: "Overcurrent fault cleared via button"
       - switch.toggle: heater
+
+  - id: on_button_hold
+    then:
+      - logger.log: "Long press (no action defined for heater function)"

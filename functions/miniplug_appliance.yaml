@@ -278,6 +278,10 @@ script:
           then:
             - switch.toggle: appliance
 
+  - id: on_button_hold
+    then:
+      - logger.log: "Long press (no action defined for appliance function)"
+
 #------------------------------------------------------------------------------
 # Power Change Handler
 #------------------------------------------------------------------------------

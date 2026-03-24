@@ -11,7 +11,8 @@
 #   - Hardware package providing:
 #       - relay_output      : GPIO output for relay
 #       - relay_led         : Internal light for relay status LED
-#       - on_button_press   : Script called when button pressed
+#       - on_button_press   : Script called when button briefly pressed
+#       - on_button_hold    : Script called when button held 3+ seconds
 #   - esp_common.yaml providing:
 #       - device_time       : Time component
 #
@@ -81,7 +82,8 @@
 #   - Schedule enforced every minute when Schedule Enabled is on
 #   - When Schedule Enabled is off, lamp behaves as a manual switch
 #   - Manual override works until next scheduled transition (when enabled)
-#   - Button always toggles lamp regardless of schedule state
+#   - Short button press always toggles lamp regardless of schedule state
+#   - Hold button 3s to toggle Schedule Enabled on/off
 #
 # USAGE:
 #   substitutions:
@@ -401,14 +403,23 @@ esphome:
       - script.execute: recalculate_schedule
 
 #------------------------------------------------------------------------------
-# Button Behavior - Toggle lamp manually
-# Works regardless of schedule state (manual override until next transition)
+# Button Behavior
+# Short press : toggle lamp (manual override until next scheduled transition)
+# Hold 3s     : toggle schedule on/off
 # The button hardware GPIO is in the hardware package, this defines the behavior
 #------------------------------------------------------------------------------
 script:
   - id: on_button_press
     then:
       - light.toggle: lamp
+
+  - id: on_button_hold
+    then:
+      - switch.toggle: schedule_enabled
+      - logger.log:
+          level: INFO
+          format: "Schedule toggled via long press: now %s"
+          args: ['id(schedule_enabled).state ? "enabled" : "disabled"']
 
   # Recalculate schedule and update text sensors
   # Called on: boot, config change, every minute

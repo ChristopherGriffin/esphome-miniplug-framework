@@ -26,7 +26,8 @@
 #     - energy            : Energy sensor (kWh)
 #
 # REQUIRES FROM FUNCTION PACKAGE:
-#   - on_button_press     : Script called when button pressed
+#   - on_button_press     : Script called when button is briefly pressed
+#   - on_button_hold      : Script called when button is held for 3+ seconds
 #
 # HARDWARE PINOUT (W1901400):
 #   - GPIO02 : Button (inverted, pullup)
@@ -250,8 +251,18 @@ binary_sensor:
       inverted: true
     filters:
       - delayed_on: 10ms
-    on_press:
-      - script.execute: on_button_press
+    on_multi_click:
+      # Short press: brief tap toggles the load
+      - timing:
+          - ON for at most 1s
+          - OFF for at least 0.2s
+        then:
+          - script.execute: on_button_press
+      # Long press: hold 3s to trigger hold action (e.g. toggle schedule)
+      - timing:
+          - ON for at least 3s
+        then:
+          - script.execute: on_button_hold
 
 #------------------------------------------------------------------------------
 # Periodic Status Check (backup for missed events)

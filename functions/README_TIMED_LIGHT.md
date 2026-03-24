@@ -9,7 +9,7 @@ A scheduled light controller with flexible time source options. Supports sunrise
 - ON and OFF times can independently use: Fixed Time, Sunrise, Sunset, or Duration
 - Minute-level offsets for sunrise/sunset (e.g., "1 hour before sunrise")
 - Schedule can be enabled/disabled from HA (manual-only mode when disabled)
-- Physical button always works regardless of schedule state
+- Physical button toggles the lamp; **hold 3 seconds to toggle the schedule on/off**
 
 ## Home Assistant Entities
 
@@ -115,7 +115,14 @@ Default restore mode: `RESTORE_DEFAULT_OFF` — the lamp starts off and the sche
 
 ## Button Behavior
 
-Single press toggles the lamp. Works regardless of schedule state — useful for quick testing or when HA is unreachable. The schedule will re-assert at the next check if enabled.
+| Action | Result |
+|--------|--------|
+| Short press (tap) | Toggle lamp on/off |
+| Hold 3 seconds | Toggle Schedule Enabled on/off |
+
+A short press always works regardless of schedule state — useful for quick testing or when HA is unreachable. The schedule will re-assert at the next check if enabled.
+
+Holding for 3 seconds is the physical equivalent of toggling the **Schedule Enabled** switch in HA. When the schedule is disabled, the lamp is fully manual and the schedule engine still calculates times (visible in the Actual On/Off Time sensors) but never acts on them.
 
 ## Example
 
