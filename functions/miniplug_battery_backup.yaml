@@ -1,0 +1,98 @@
+#==============================================================================
+# Mini Plug Function: Battery Backup (AC Disconnect)
+#==============================================================================
+# File: functions/miniplug_battery_backup.yaml
+#
+# Configures the plug as an AC power disconnect switch for battery backup
+# systems. The relay controls AC input to a charger/inverter and defaults
+# to ON so the system stays powered and charging under normal conditions.
+#
+# Designed for scenarios where Home Assistant automations manage the relay
+# based on external conditions (e.g., lightning proximity, grid events)
+# while the plug also monitors the battery via BMS addons.
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - relay_output      : GPIO output for relay
+#       - relay_led         : Internal light for relay status LED
+#       - on_button_press   : Script called when button briefly pressed
+#       - on_button_hold    : Script called when button held 3+ seconds
+#
+# REQUIRED SUBSTITUTIONS:
+#   - friendly_name : Human-readable device name
+#
+# PROVIDES:
+#   IDs:
+#     - ac_disconnect     : Switch entity for the relay
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Switches:
+#     - AC Power          : Main relay control (on = AC connected, off = isolated)
+#
+# BEHAVIOR:
+#   - Relay defaults ON at boot (AC power flowing to charger/inverter)
+#   - Short button press toggles relay
+#   - Long button press reserved for future use (no-op currently)
+#   - Relay LED syncs with relay state (white LED on = AC connected)
+#   - HA automations control relay via switch.toggle/turn_on/turn_off
+#
+# TYPICAL HA AUTOMATION PATTERN:
+#   Lightning detected < 30mi  → switch.turn_off (isolate from grid)
+#   Lightning > 50mi for 10min → switch.turn_on  (reconnect to grid)
+#
+# USAGE:
+#   substitutions:
+#     device_name: "lightning-switch-tower"
+#     friendly_name: "Lightning Switch Tower"
+#     name_no_dashes: "lightning_switch_tower"
+#     device_description: "Lightning Tower UPS - SwitchBot Mini Plug + JBD BMS"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/switchbot_miniplug_W1901400.yaml
+#     function: !include functions/miniplug_battery_backup.yaml
+#     bms0: !include
+#       file: addons/jbd_bms_ble.yaml
+#       vars:
+#         bms_id: "bms0"
+#         bms_name: "Battery"
+#         bms_mac_address: "A5:C2:37:37:D0:16"
+#     battery0: !include
+#       file: addons/battery_power_analysis.yaml
+#       vars:
+#         bms_id: "bms0"
+#         bms_name: "Battery"
+#         max_battery_current: "100"
+#         inverter_efficiency: "0.85"
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# AC Disconnect Switch (Relay)
+#------------------------------------------------------------------------------
+switch:
+  - platform: output
+    name: "AC Power"
+    id: ac_disconnect
+    output: relay_output
+    device_class: outlet
+    restore_mode: RESTORE_DEFAULT_ON
+    on_turn_on:
+      - light.turn_on: relay_led
+    on_turn_off:
+      - light.turn_off: relay_led
+
+#------------------------------------------------------------------------------
+# Button Behavior
+# Short press : toggle AC power (manual override)
+# Hold 3s     : reserved for future use
+#------------------------------------------------------------------------------
+script:
+  - id: on_button_press
+    then:
+      - switch.toggle: ac_disconnect
+
+  - id: on_button_hold
+    then:
+      - logger.log:
+          level: INFO
+          format: "Long press - no action assigned"

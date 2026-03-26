@@ -1,0 +1,275 @@
+#==============================================================================
+# JBD BMS BLE - Addon Package (Multi-Instance)
+#==============================================================================
+# File: addons/jbd_bms_ble.yaml
+#
+# Bluetooth Low Energy interface to JBD (Jiabaida/Xiaoxiang) Battery
+# Management Systems using syssi's esphome-jbd-bms component.
+# Designed for multi-instance use - include once per physical BMS.
+#
+# DEPENDENCIES:
+#   - Hardware package providing esp32_ble_tracker (e.g., switchbot_miniplug)
+#   - external_components pointing to syssi/esphome-jbd-bms (declare at device level)
+#
+# REQUIRED VARS (passed via !include vars:):
+#   - bms_id             : Unique instance ID (e.g., "bms0", "bms1")
+#   - bms_name           : Display name prefix (e.g., "Battery", "Battery 1")
+#   - bms_mac_address    : BLE MAC address of the JBD BMS
+#
+# OPTIONAL VARS:
+#   - bms_update_interval : How often to poll BMS (default: "2s")
+#
+# PROVIDES:
+#   IDs (all prefixed with ${bms_id}_):
+#     - ${bms_id}_client          : BLE client connection
+#     - ${bms_id}                 : JBD BMS BLE component
+#     - ${bms_id}_current         : Battery current (A)
+#     - ${bms_id}_charging_power  : Charging power (W)
+#     - ${bms_id}_discharging_power : Discharging power (W)
+#     - ${bms_id}_state_of_charge : State of charge (%)
+#     - ${bms_id}_nominal_capacity : Nominal capacity (Ah)
+#     - ${bms_id}_capacity_remaining : Remaining capacity (Ah)
+#     - ${bms_id}_total_voltage   : Pack voltage (V)
+#     - ${bms_id}_average_cell_voltage : Average cell voltage (V)
+#     - ${bms_id}_remaining_charge_time : Estimated time to full (hours)
+#     - ${bms_id}_remaining_discharge_time : Estimated time to empty (hours)
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Sensors:
+#     - ${bms_name} Current, Net Power, Charging Power, Discharging Power
+#     - ${bms_name} State of Charge, Nominal Capacity, Capacity Remaining
+#     - ${bms_name} Total Voltage, Average/Delta/Min/Max Cell Voltage
+#     - ${bms_name} Min/Max Voltage Cell (cell number)
+#     - ${bms_name} Cell Voltage 1-4, Temperature
+#     - ${bms_name} Battery Strings, Charging Cycles, Cycle Capacity
+#     - ${bms_name} Software Version
+#     - ${bms_name} Remaining Charge Time, Remaining Discharge Time
+#   Binary Sensors:
+#     - ${bms_name} Balancing, Charging, Discharging
+#   Text Sensors:
+#     - ${bms_name} Errors, Operation Status, Device Model
+#   Switches:
+#     - ${bms_name} Charging, Discharging, BLE Connection
+#   Buttons:
+#     - ${bms_name} Retrieve HW Version, Force SOC Reset
+#
+# USAGE:
+#   # At device level - declare external component once:
+#   external_components:
+#     - source: github://syssi/esphome-jbd-bms@main
+#
+#   packages:
+#     bms0: !include
+#       file: addons/jbd_bms_ble.yaml
+#       vars:
+#         bms_id: "bms0"
+#         bms_name: "Battery"
+#         bms_mac_address: "A5:C2:37:37:D0:16"
+#
+#   # Multiple batteries:
+#     bms1: !include
+#       file: addons/jbd_bms_ble.yaml
+#       vars:
+#         bms_id: "bms1"
+#         bms_name: "Battery 2"
+#         bms_mac_address: "XX:XX:XX:XX:XX:XX"
+#==============================================================================
+
+# Default update interval if not overridden
+substitutions:
+  bms_update_interval: "2s"
+
+#------------------------------------------------------------------------------
+# BLE Client
+#------------------------------------------------------------------------------
+ble_client:
+  - id: ${bms_id}_client
+    mac_address: ${bms_mac_address}
+
+#------------------------------------------------------------------------------
+# JBD BMS BLE Component
+#------------------------------------------------------------------------------
+jbd_bms_ble:
+  - id: ${bms_id}
+    ble_client_id: ${bms_id}_client
+    update_interval: ${bms_update_interval}
+
+#------------------------------------------------------------------------------
+# BMS Switches
+#------------------------------------------------------------------------------
+switch:
+  - platform: ble_client
+    ble_client_id: ${bms_id}_client
+    name: "${bms_name} BLE Connection"
+    entity_category: config
+
+  - platform: jbd_bms_ble
+    jbd_bms_ble_id: ${bms_id}
+    charging:
+      name: "${bms_name} Charging"
+    discharging:
+      name: "${bms_name} Discharging"
+
+#------------------------------------------------------------------------------
+# BMS Buttons
+#------------------------------------------------------------------------------
+button:
+  - platform: jbd_bms_ble
+    jbd_bms_ble_id: ${bms_id}
+    retrieve_hardware_version:
+      name: "${bms_name} Retrieve HW Version"
+      entity_category: diagnostic
+    force_soc_reset:
+      name: "${bms_name} Force SOC Reset"
+      entity_category: config
+
+#------------------------------------------------------------------------------
+# BMS Binary Sensors
+#------------------------------------------------------------------------------
+binary_sensor:
+  - platform: jbd_bms_ble
+    jbd_bms_ble_id: ${bms_id}
+    balancing:
+      name: "${bms_name} Balancing"
+    charging:
+      name: "${bms_name} Charging"
+    discharging:
+      name: "${bms_name} Discharging"
+
+#------------------------------------------------------------------------------
+# BMS Text Sensors
+#------------------------------------------------------------------------------
+text_sensor:
+  - platform: jbd_bms_ble
+    jbd_bms_ble_id: ${bms_id}
+    errors:
+      name: "${bms_name} Errors"
+    operation_status:
+      name: "${bms_name} Operation Status"
+    device_model:
+      name: "${bms_name} Device Model"
+
+#------------------------------------------------------------------------------
+# BMS Sensors
+#------------------------------------------------------------------------------
+sensor:
+  - platform: jbd_bms_ble
+    jbd_bms_ble_id: ${bms_id}
+    battery_strings:
+      name: "${bms_name} Battery Strings"
+    current:
+      name: "${bms_name} Current"
+      id: ${bms_id}_current
+    power:
+      name: "${bms_name} Net Power"
+      id: ${bms_id}_power
+      filters:
+        - exponential_moving_average:
+            alpha: 0.01
+    charging_power:
+      name: "${bms_name} Charging Power"
+      id: ${bms_id}_charging_power
+      filters:
+        - exponential_moving_average:
+            alpha: 0.01
+            send_every: 5
+    discharging_power:
+      name: "${bms_name} Discharging Power"
+      id: ${bms_id}_discharging_power
+      filters:
+        - exponential_moving_average:
+            alpha: 0.01
+            send_every: 5
+    state_of_charge:
+      name: "${bms_name} State of Charge"
+      id: ${bms_id}_state_of_charge
+    nominal_capacity:
+      name: "${bms_name} Nominal Capacity"
+      id: ${bms_id}_nominal_capacity
+    charging_cycles:
+      name: "${bms_name} Charging Cycles"
+    capacity_remaining:
+      name: "${bms_name} Capacity Remaining"
+      id: ${bms_id}_capacity_remaining
+    battery_cycle_capacity:
+      name: "${bms_name} Cycle Capacity"
+    total_voltage:
+      name: "${bms_name} Total Voltage"
+      id: ${bms_id}_total_voltage
+    average_cell_voltage:
+      name: "${bms_name} Average Cell Voltage"
+      id: ${bms_id}_average_cell_voltage
+    delta_cell_voltage:
+      name: "${bms_name} Delta Cell Voltage"
+    min_cell_voltage:
+      name: "${bms_name} Min Cell Voltage"
+    max_cell_voltage:
+      name: "${bms_name} Max Cell Voltage"
+    min_voltage_cell:
+      name: "${bms_name} Min Voltage Cell"
+    max_voltage_cell:
+      name: "${bms_name} Max Voltage Cell"
+    temperature_1:
+      name: "${bms_name} Temperature"
+    cell_voltage_1:
+      name: "${bms_name} Cell Voltage 1"
+    cell_voltage_2:
+      name: "${bms_name} Cell Voltage 2"
+    cell_voltage_3:
+      name: "${bms_name} Cell Voltage 3"
+    cell_voltage_4:
+      name: "${bms_name} Cell Voltage 4"
+    software_version:
+      name: "${bms_name} Software Version"
+
+  #----------------------------------------------------------------------------
+  # Remaining Charge Time (replaces syssi remote package)
+  # Estimates hours until full based on charge current and remaining capacity.
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Remaining Charge Time"
+    id: ${bms_id}_remaining_charge_time
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    icon: mdi:battery-clock
+    update_interval: 10s
+    lambda: |-
+      float current = id(${bms_id}_current).state;
+      float capacity_remaining = id(${bms_id}_capacity_remaining).state;
+      float nominal_capacity = id(${bms_id}_nominal_capacity).state;
+
+      if (isnan(current) || isnan(capacity_remaining) || isnan(nominal_capacity))
+        return NAN;
+
+      // Only valid when charging (positive current = charging for JBD)
+      if (current <= 0.1) return NAN;
+
+      float capacity_needed = nominal_capacity - capacity_remaining;
+      if (capacity_needed <= 0) return 0.0f;
+
+      return capacity_needed / current;
+
+  #----------------------------------------------------------------------------
+  # Remaining Discharge Time (replaces syssi remote package)
+  # Estimates hours until empty based on discharge current and remaining capacity.
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Remaining Discharge Time"
+    id: ${bms_id}_remaining_discharge_time
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    icon: mdi:battery-clock-outline
+    update_interval: 10s
+    lambda: |-
+      float current = id(${bms_id}_current).state;
+      float capacity_remaining = id(${bms_id}_capacity_remaining).state;
+
+      if (isnan(current) || isnan(capacity_remaining))
+        return NAN;
+
+      // Only valid when discharging (negative current = discharging for JBD)
+      float discharge_current = abs(current);
+      if (discharge_current <= 0.1) return NAN;
+      if (capacity_remaining <= 0) return 0.0f;
+
+      return capacity_remaining / discharge_current;

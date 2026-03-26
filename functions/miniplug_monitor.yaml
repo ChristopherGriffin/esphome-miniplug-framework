@@ -1,0 +1,39 @@
+#==============================================================================
+# Mini Plug Function: Monitor Only
+#==============================================================================
+# File: functions/miniplug_monitor.yaml
+#
+# Use when the plug is acting purely as a power/sensor monitor with no
+# relay control needed. Relay stays in its restored state. Button does nothing.
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - on_button_press   : Script called when button pressed
+#       - on_button_hold    : Script called when button held
+#
+# REQUIRED SUBSTITUTIONS:
+#   - friendly_name : Human-readable device name
+#
+# USAGE:
+#   substitutions:
+#     device_name: "battery-monitor"
+#     friendly_name: "Battery Monitor"
+#     name_no_dashes: "battery_monitor"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/switchbot_miniplug_W1901400.yaml
+#     function: !include functions/miniplug_monitor.yaml
+#==============================================================================
+
+#------------------------------------------------------------------------------
+# Button Behavior - No-op (monitor only, no relay control)
+#------------------------------------------------------------------------------
+script:
+  - id: on_button_press
+    then:
+      - logger.log: "Button press (no action - monitor only)"
+
+  - id: on_button_hold
+    then:
+      - logger.log: "Button hold (no action - monitor only)"

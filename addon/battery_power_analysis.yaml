@@ -1,0 +1,190 @@
+#==============================================================================
+# Battery Power Analysis - Addon Package
+#==============================================================================
+# File: addons/battery_power_analysis.yaml
+#
+# Template sensors that bridge AC power monitoring (from hardware package)
+# with BMS data (from jbd_bms_ble addon) to provide runtime estimation,
+# power source identification, and load analysis.
+#
+# DEPENDENCIES:
+#   - Hardware package providing:
+#       - power             : AC power sensor (W)
+#   - addons/jbd_bms_ble.yaml providing (for the given bms_id):
+#       - ${bms_id}_current           : Battery current (A)
+#       - ${bms_id}_charging_power    : BMS charging power (W)
+#       - ${bms_id}_discharging_power : BMS discharging power (W)
+#       - ${bms_id}_capacity_remaining : Remaining capacity (Ah)
+#       - ${bms_id}_total_voltage     : Pack voltage (V)
+#
+# REQUIRED VARS (passed via !include vars:):
+#   - bms_id               : Must match the bms_id used in jbd_bms_ble addon
+#   - bms_name             : Display name prefix (should match BMS addon)
+#   - max_battery_current  : Max expected discharge current in amps (e.g., "100")
+#   - inverter_efficiency  : Inverter efficiency as decimal (e.g., "0.85")
+#
+# PROVIDES:
+#   IDs:
+#     - ${bms_id}_power_from_battery : Power being drawn from battery (W)
+#     - ${bms_id}_total_load         : Actual load regardless of source (W)
+#     - ${bms_id}_battery_load_pct   : Battery discharge as % of max current
+#     - ${bms_id}_runtime_hours      : Estimated remaining runtime (hours)
+#     - ${bms_id}_runtime_source     : Text indicating "Battery (actual)" or
+#                                      "AC (estimated)"
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Sensors:
+#     - ${bms_name} Battery Load Power   : Watts from battery (NAN when on AC)
+#     - ${bms_name} Total Load           : Actual load on the system (W)
+#     - ${bms_name} Battery Load         : Discharge current as % of max
+#     - ${bms_name} Remaining Runtime    : Hours of battery remaining
+#   Text Sensors:
+#     - ${bms_name} Runtime Source       : Which power source and calc method
+#
+# RUNTIME ESTIMATION MODES:
+#   On Battery (discharging_power > 5W):
+#     Uses actual discharge current for accurate runtime calculation.
+#   On AC (discharging_power <= 5W):
+#     Projects runtime from current AC load, accounting for inverter
+#     efficiency losses. Answers "if AC died now, how long would I last?"
+#
+# USAGE:
+#   packages:
+#     battery0: !include
+#       file: addons/battery_power_analysis.yaml
+#       vars:
+#         bms_id: "bms0"
+#         bms_name: "Battery"
+#         max_battery_current: "100"
+#         inverter_efficiency: "0.85"
+#==============================================================================
+
+sensor:
+  #----------------------------------------------------------------------------
+  # Power from Battery
+  # Reports actual power draw when running on battery, NAN otherwise.
+  # Load = AC power - charging + discharging
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Battery Load Power"
+    id: ${bms_id}_power_from_battery
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 1s
+    lambda: |-
+      float discharge = id(${bms_id}_discharging_power).state;
+      if (isnan(discharge) || discharge <= 0.0) return NAN;
+
+      float ac = id(power).state;
+      float charge = id(${bms_id}_charging_power).state;
+      if (isnan(ac)) ac = 0;
+      if (isnan(charge)) charge = 0;
+
+      return ac - charge + discharge;
+
+  #----------------------------------------------------------------------------
+  # Total Load
+  # Actual load on the system regardless of power source.
+  # Load = AC power - charging + discharging
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Total Load"
+    id: ${bms_id}_total_load
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 1
+    update_interval: 1s
+    lambda: |-
+      float ac = id(power).state;
+      float charge = id(${bms_id}_charging_power).state;
+      float discharge = id(${bms_id}_discharging_power).state;
+
+      if (isnan(ac)) ac = 0;
+      if (isnan(charge)) charge = 0;
+      if (isnan(discharge)) discharge = 0;
+
+      return ac - charge + discharge;
+
+  #----------------------------------------------------------------------------
+  # Battery Load Percentage
+  # Current discharge as percentage of max rated battery current.
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Battery Load"
+    id: ${bms_id}_battery_load_pct
+    unit_of_measurement: "%"
+    accuracy_decimals: 0
+    icon: mdi:battery-arrow-down
+    update_interval: 10s
+    lambda: |-
+      float current = id(${bms_id}_current).state;
+      if (isnan(current) || current >= 0) return 0.0f;
+      return (abs(current) / ${max_battery_current}) * 100.0f;
+
+  #----------------------------------------------------------------------------
+  # Remaining Runtime (Dual-Mode Estimator)
+  #
+  # On Battery: Uses actual discharge current for accurate remaining time.
+  # On AC: Projects how long battery would last at current load if AC failed.
+  #        Accounts for inverter efficiency losses in the projection.
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "${bms_name} Remaining Runtime"
+    id: ${bms_id}_runtime_hours
+    unit_of_measurement: "h"
+    accuracy_decimals: 2
+    icon: mdi:battery-clock
+    update_interval: 5s
+    lambda: |-
+      float capacity_ah = id(${bms_id}_capacity_remaining).state;
+      float battery_voltage = id(${bms_id}_total_voltage).state;
+      float discharge_power = id(${bms_id}_discharging_power).state;
+      float ac_power = id(power).state;
+      float charging = id(${bms_id}_charging_power).state;
+
+      if (isnan(capacity_ah) || capacity_ah <= 0) return 0.0f;
+      if (isnan(battery_voltage) || battery_voltage <= 0) return 0.0f;
+
+      float runtime_hours = 0.0f;
+
+      if (!isnan(discharge_power) && discharge_power > 5.0f) {
+        // ON BATTERY - use actual discharge current
+        float current_draw = abs(id(${bms_id}_current).state);
+        if (current_draw > 0.1f) {
+          runtime_hours = capacity_ah / current_draw;
+        }
+      } else {
+        // ON AC - project runtime from current load
+        if (isnan(ac_power)) ac_power = 0;
+        if (isnan(charging)) charging = 0;
+
+        float load_watts = ac_power - charging;
+        if (load_watts > 1.0f) {
+          float estimated_current = load_watts / (battery_voltage * ${inverter_efficiency});
+          if (estimated_current > 0.01f) {
+            runtime_hours = capacity_ah / estimated_current;
+          }
+        }
+      }
+
+      return runtime_hours;
+
+#------------------------------------------------------------------------------
+# Runtime Source Text Sensor
+# Indicates which power source is active and which calculation mode is used.
+#------------------------------------------------------------------------------
+text_sensor:
+  - platform: template
+    name: "${bms_name} Runtime Source"
+    id: ${bms_id}_runtime_source
+    icon: mdi:power-plug-battery
+    update_interval: 5s
+    lambda: |-
+      float discharge = id(${bms_id}_discharging_power).state;
+      if (!isnan(discharge) && discharge > 5.0f) {
+        return std::string("Battery (actual)");
+      }
+      return std::string("AC (estimated)");

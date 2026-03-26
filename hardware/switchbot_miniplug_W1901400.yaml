@@ -56,12 +56,12 @@
 #
 # ENTITIES EXPOSED TO HOME ASSISTANT:
 #   Sensors:
-#     - Power         : Real-time power (W)
-#     - Current       : Current draw (A)
-#     - Voltage       : Line voltage (V)
-#     - Energy        : Cumulative energy (kWh)
-#     - Daily Energy  : Daily cumulative energy (kWh)
-#     - Internal Temp : ESP32 die temperature
+#     - Outlet Power        : Real-time power (W)
+#     - Outlet Current      : Current draw (A)
+#     - Outlet Voltage      : Line voltage (V)
+#     - Outlet Energy       : Cumulative energy (kWh)
+#     - Outlet Daily Energy : Daily cumulative energy (kWh)
+#     - Internal Temp       : ESP32 die temperature
 #
 # USAGE:
 #   substitutions:
@@ -287,28 +287,28 @@ sensor:
     voltage_divider: ${voltage_divider}
     current_resistor: ${current_resistor}
     power:
-      name: "Power"
+      name: "Outlet Power"
       id: power
       unit_of_measurement: W
       accuracy_decimals: 1
       state_class: measurement
       device_class: power
     current:
-      name: "Current"
+      name: "Outlet Current"
       id: current
       unit_of_measurement: A
       accuracy_decimals: 2
       state_class: measurement
       device_class: current
     voltage:
-      name: "Voltage"
+      name: "Outlet Voltage"
       id: voltage
       unit_of_measurement: V
       accuracy_decimals: 1
       state_class: measurement
       device_class: voltage
     energy:
-      name: "Energy"
+      name: "Outlet Energy"
       id: energy
       unit_of_measurement: kWh
       accuracy_decimals: 3
@@ -325,6 +325,6 @@ sensor:
     entity_category: diagnostic
 
   - platform: total_daily_energy
-    name: "Daily Energy"
+    name: "Outlet Daily Energy"
     power_id: power
     accuracy_decimals: 2
