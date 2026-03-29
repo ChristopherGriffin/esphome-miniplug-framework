@@ -74,6 +74,17 @@ The defaults work reasonably well out of the box. For better accuracy, measure w
 
 Default: `2s` (configurable via `power_update_interval` substitution). The BL0937 alternates between measuring voltage and current (`change_mode_every: 4` — switches every 4 update cycles), so power readings update at the configured interval but voltage/current alternate.
 
+## Button Behavior
+
+The physical button (GPIO02) uses ESPHome's `on_multi_click` to distinguish short and long presses. It calls scripts defined by the function package — the hardware only detects the gesture and delegates.
+
+| Action | Script Called | Typical Result |
+|--------|--------------|----------------|
+| Short press (tap, < 1s) | `on_button_press` | Toggle lamp |
+| Hold 3 seconds | `on_button_hold` | Toggle schedule or other function-defined action |
+
+The actual behavior depends on which function package is loaded. See the function README for details.
+
 ## BLE Proxy
 
 This plug doubles as a **Bluetooth LE proxy** for Home Assistant. Any BLE devices in range (SwitchBot sensors, Xiaomi thermometers, plant sensors, etc.) can be read by HA through this plug without a dedicated BLE adapter on the HA host.

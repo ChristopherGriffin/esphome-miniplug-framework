@@ -83,7 +83,7 @@
 #   - When Schedule Enabled is off, lamp behaves as a manual switch
 #   - Manual override works until next scheduled transition (when enabled)
 #   - Short button press always toggles lamp regardless of schedule state
-#   - Hold button 3s to toggle Schedule Enabled on/off
+#   - Hold button 3s to toggle Schedule Enabled on/off; blue LED flashes 3x to confirm
 #
 # USAGE:
 #   substitutions:
@@ -420,6 +420,32 @@ script:
           level: INFO
           format: "Schedule toggled via long press: now %s"
           args: ['id(schedule_enabled).state ? "enabled" : "disabled"']
+      # Flash pattern: 3 quick = schedule ON, 1 long = schedule OFF
+      - if:
+          condition:
+            switch.is_on: schedule_enabled
+          then:
+            # Schedule now ENABLED: 3 quick flashes
+            - repeat:
+                count: 3
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: none
+                  - delay: 200ms
+                  - light.turn_off: status_led
+                  - delay: 200ms
+          else:
+            # Schedule now DISABLED: 1 long pulse
+            - light.turn_on:
+                id: status_led
+                brightness: 100%
+                effect: none
+            - delay: 1s
+            - light.turn_off: status_led
+      # Restore normal connection-status LED behavior
+      - script.execute: update_status_led
 
   # Recalculate schedule and update text sensors
   # Called on: boot, config change, every minute

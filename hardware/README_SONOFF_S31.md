@@ -47,6 +47,17 @@ The red LED is **hardware-wired** to the relay. It turns on when the relay is en
 
 To maintain compatibility with function packages that call `relay_led.turn_on()` / `relay_led.turn_off()`, this profile provides a **dummy `relay_led`** light entity backed by a template output. The calls succeed silently — the real indication comes from the hardware-coupled red LED.
 
+## Button Behavior
+
+The physical button (GPIO0) uses ESPHome's `on_multi_click` to distinguish short and long presses. It calls scripts defined by the function package — the hardware only detects the gesture and delegates.
+
+| Action | Script Called | Typical Result |
+|--------|--------------|----------------|
+| Short press (tap, < 1s) | `on_button_press` | Toggle lamp |
+| Hold 3 seconds | `on_button_hold` | Toggle schedule or other function-defined action |
+
+The actual behavior depends on which function package is loaded. See the function README for details.
+
 ## Power Monitoring
 
 The CSE7766 communicates over UART, which means **the serial logger must be disabled** (`baud_rate: 0`). The hardware profile handles this automatically. You won't get serial debug output over USB, but the web UI and wireless logs still work fine.
