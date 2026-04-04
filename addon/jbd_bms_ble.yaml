@@ -31,6 +31,8 @@
 #     - ${bms_id}_capacity_remaining : Remaining capacity (Ah)
 #     - ${bms_id}_total_voltage   : Pack voltage (V)
 #     - ${bms_id}_average_cell_voltage : Average cell voltage (V)
+#     - ${bms_id}_charging             : BMS charging switch (on = charging enabled)
+#     - ${bms_id}_discharging          : BMS discharging switch (on = discharging enabled)
 #     - ${bms_id}_remaining_charge_time : Estimated time to full (hours)
 #     - ${bms_id}_remaining_discharge_time : Estimated time to empty (hours)
 #
@@ -107,8 +109,10 @@ switch:
     jbd_bms_ble_id: ${bms_id}
     charging:
       name: "${bms_name} Charging"
+      id: ${bms_id}_charging
     discharging:
       name: "${bms_name} Discharging"
+      id: ${bms_id}_discharging
 
 #------------------------------------------------------------------------------
 # BMS Buttons

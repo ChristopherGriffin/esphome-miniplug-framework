@@ -53,8 +53,10 @@ The physical button (GPIO0) uses ESPHome's `on_multi_click` to distinguish short
 
 | Action | Script Called | Typical Result |
 |--------|--------------|----------------|
-| Short press (tap, < 1s) | `on_button_press` | Toggle lamp |
-| Hold 3 seconds | `on_button_hold` | Toggle schedule or other function-defined action |
+| Tap and release (< 2.9s) | `on_button_press` | Toggle lamp |
+| Hold 3s (while held) | `on_button_hold` | Toggle schedule or other function-defined action |
+
+Short press fires on release. Long hold fires at the 3-second mark while the button is still held — the function package flashes the LED to signal it's safe to release. Release after the 3s mark is ignored.
 
 The actual behavior depends on which function package is loaded. See the function README for details.
 

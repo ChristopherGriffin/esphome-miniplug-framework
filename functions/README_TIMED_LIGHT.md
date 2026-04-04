@@ -122,9 +122,9 @@ Default restore mode: `RESTORE_DEFAULT_OFF` — the lamp starts off and the sche
 | Short press (tap) | Toggle lamp on/off |
 | Hold 3 seconds | Toggle Schedule Enabled on/off + blue LED confirmation |
 
-A short press always works regardless of schedule state — useful for quick testing or when HA is unreachable. The schedule will re-assert at the next check if enabled.
+A short press fires on release — useful for quick manual overrides regardless of schedule state. The schedule will re-assert at the next minute check if enabled.
 
-Holding for 3 seconds is the physical equivalent of toggling the **Schedule Enabled** switch in HA. The blue LED flashes to confirm the new state:
+Holding for 3 seconds triggers immediately at the 3-second mark while the button is still held — it does not wait for release. The blue LED flashes to confirm the new state and signal that it's safe to let go:
 
 - **3 quick flashes** — schedule is now **enabled**
 - **1 long pulse** — schedule is now **disabled**

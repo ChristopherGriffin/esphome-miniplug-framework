@@ -15,6 +15,8 @@ Combines two addon packages to provide full battery backup monitoring when a JBD
 - **Net Power** — Net battery power (W). Positive = charging, negative = discharging.
 - **Charging Power / Discharging Power** — One-directional power flow sensors
 - **State of Charge, Capacity Remaining, Total Voltage, Cell Voltages**, etc.
+- **Charging switch** (`${bms_id}_charging`) — Exposed with internal ID for use by the battery backup function's exercise mode
+- **Discharging switch** (`${bms_id}_discharging`) — Exposed with internal ID for use by the battery backup function's exercise mode
 
 ### From `battery_power_analysis.yaml`
 - **Outlet Power** *(from hardware)* — Raw AC watts at the plug

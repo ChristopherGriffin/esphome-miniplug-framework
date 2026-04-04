@@ -437,13 +437,18 @@ script:
                   - light.turn_off: status_led
                   - delay: 200ms
           else:
-            # Schedule now DISABLED: 1 long pulse
+            # Schedule now DISABLED: brief OFF, 1 long pulse, brief OFF
+            # The leading/trailing OFF ensures the pulse is visible even if
+            # the slow glow was at its peak when the hold fired
+            - light.turn_off: status_led
+            - delay: 200ms
             - light.turn_on:
                 id: status_led
                 brightness: 100%
                 effect: none
             - delay: 1s
             - light.turn_off: status_led
+            - delay: 200ms
       # Restore normal connection-status LED behavior
       - script.execute: update_status_led
 

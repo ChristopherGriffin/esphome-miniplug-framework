@@ -252,13 +252,14 @@ binary_sensor:
     filters:
       - delayed_on: 10ms
     on_multi_click:
-      # Short press: brief tap toggles the load
+      # Short press: tap and release within 2.9s - fires on release
       - timing:
-          - ON for at most 1s
-          - OFF for at least 0.2s
+          - ON for at most 2.9s
+          - OFF for at least 0.1s
         then:
           - script.execute: on_button_press
-      # Long press: hold 3s to trigger hold action (e.g. toggle schedule)
+      # Long press: fires at 3s mark while still held - LED flashes to signal OK to release
+      # Release after the 3s mark is ignored (no OFF condition)
       - timing:
           - ON for at least 3s
         then:

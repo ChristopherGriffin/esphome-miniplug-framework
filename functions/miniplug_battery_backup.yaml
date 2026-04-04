@@ -17,28 +17,59 @@
 #       - relay_led         : Internal light for relay status LED
 #       - on_button_press   : Script called when button briefly pressed
 #       - on_button_hold    : Script called when button held 3+ seconds
+#   - BMS addon providing:
+#       - ${exercise_bms_id}_state_of_charge : SOC sensor (%)
+#       - ${exercise_bms_id}_charging        : BMS charging switch
+#       - ${exercise_bms_id}_discharging     : BMS discharging switch
+#   - Home Assistant entity: input_boolean.lightning_alert
 #
 # REQUIRED SUBSTITUTIONS:
 #   - friendly_name : Human-readable device name
 #
+# OPTIONAL SUBSTITUTIONS:
+#   - exercise_bms_id : BMS instance ID to use for exercise mode (default: "bms0")
+#
 # PROVIDES:
 #   IDs:
-#     - ac_disconnect     : Switch entity for the relay
+#     - ac_disconnect              : Switch entity for the relay
+#     - lightning_alert            : Binary sensor imported from HA
+#     - battery_exercise_mode      : Switch to enable/disable LiFePO4 exercise cycling
+#     - exercise_high_soc          : Number — SOC % at which charging is stopped
+#     - exercise_low_soc           : Number — SOC % at which charging resumes
+#     - exercise_low_discharge_soc : Number — SOC % at which discharging is stopped
+#                                    (software floor above BMS hard cutoff)
 #
 # ENTITIES EXPOSED TO HOME ASSISTANT:
 #   Switches:
-#     - AC Power          : Main relay control (on = AC connected, off = isolated)
+#     - AC Power                   : Main relay control (on = AC connected)
+#     - Battery Exercise Mode      : Enables automatic charge cycling for LiFePO4 health
+#   Binary Sensors:
+#     - Lightning Alert            : Imported from HA (device_class: safety)
+#   Numbers (config category):
+#     - Battery Exercise High SOC        : Charging stops here       (default 90%)
+#     - Battery Exercise Low SOC         : Charging resumes here     (default 20%)
+#     - Battery Exercise Discharge Floor : Discharging stops here    (default 12%)
+#                                          Discharging re-enables at exercise_low_soc
 #
 # BEHAVIOR:
 #   - Relay defaults ON at boot (AC power flowing to charger/inverter)
 #   - Short button press toggles relay
 #   - Long button press reserved for future use (no-op currently)
 #   - Relay LED syncs with relay state (white LED on = AC connected)
-#   - HA automations control relay via switch.toggle/turn_on/turn_off
-#
-# TYPICAL HA AUTOMATION PATTERN:
-#   Lightning detected < 30mi  → switch.turn_off (isolate from grid)
-#   Lightning > 50mi for 10min → switch.turn_on  (reconnect to grid)
+#   - Lightning alert drives relay automatically (no HA automation required):
+#       lightning_alert ON  → relay turns OFF (isolate from grid)
+#       lightning_alert OFF → relay turns ON  (reconnect to grid)
+#       Fires on every state update from HA (on_state) so reconnects and reboots
+#       are handled immediately without a polling interval
+#   - When Battery Exercise Mode is ON (checked every 30 seconds):
+#       Charge side:
+#         - BMS charging disabled once SOC >= High SOC threshold
+#         - BMS charging re-enabled once SOC <= Low SOC threshold
+#       Discharge floor:
+#         - BMS discharging disabled once SOC <= Discharge Floor threshold
+#           (prevents reaching BMS hard cutoff which can damage LiFePO4 cells)
+#         - BMS discharging re-enabled once SOC recovers to >= Low SOC threshold
+#       All thresholds adjustable from HA and persist across reboots
 #
 # USAGE:
 #   substitutions:
@@ -46,6 +77,7 @@
 #     friendly_name: "Lightning Switch Tower"
 #     name_no_dashes: "lightning_switch_tower"
 #     device_description: "Lightning Tower UPS - SwitchBot Mini Plug + JBD BMS"
+#     exercise_bms_id: "bms0"   # optional, bms0 is the default
 #
 #   packages:
 #     base: !include common/esp_common.yaml
@@ -66,6 +98,10 @@
 #         inverter_efficiency: "0.85"
 #==============================================================================
 
+# Default BMS instance for exercise mode — override at device level if needed
+substitutions:
+  exercise_bms_id: "bms0"
+
 #------------------------------------------------------------------------------
 # AC Disconnect Switch (Relay)
 #------------------------------------------------------------------------------
@@ -80,6 +116,116 @@ switch:
       - light.turn_on: relay_led
     on_turn_off:
       - light.turn_off: relay_led
+
+  #----------------------------------------------------------------------------
+  # Battery Exercise Mode
+  # When enabled, manages the BMS charging and discharging switches to cycle
+  # the battery between configurable SOC thresholds rather than holding it at
+  # full charge. Intended for long-term LiFePO4 health in always-connected
+  # backup systems.
+  #----------------------------------------------------------------------------
+  - platform: template
+    name: "Battery Exercise Mode"
+    id: battery_exercise_mode
+    icon: mdi:battery-sync
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_OFF
+
+#------------------------------------------------------------------------------
+# Lightning Alert (Home Stance Dashboard)
+# Imported from Home Assistant input_boolean.lightning_alert.
+# on_state fires on every HA state update — handles boot, reconnects, and
+# live changes without needing a polling interval.
+#------------------------------------------------------------------------------
+binary_sensor:
+  - platform: homeassistant
+    id: lightning_alert
+    entity_id: input_boolean.lightning_alert
+    name: "Lightning Alert"
+    device_class: safety
+    on_state:
+      - if:
+          condition:
+            binary_sensor.is_on: lightning_alert
+          then:
+            - logger.log: "Lightning Alert ACTIVATED - disconnecting AC power"
+            - switch.turn_off: ac_disconnect
+          else:
+            - logger.log: "Lightning Alert CLEARED - reconnecting AC power"
+            - switch.turn_on: ac_disconnect
+
+#------------------------------------------------------------------------------
+# Exercise Mode Threshold Controls
+#------------------------------------------------------------------------------
+number:
+  - platform: template
+    name: "Battery Exercise High SOC"
+    id: exercise_high_soc
+    min_value: 50
+    max_value: 100
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-arrow-up
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: 90
+
+  - platform: template
+    name: "Battery Exercise Low SOC"
+    id: exercise_low_soc
+    min_value: 5
+    max_value: 80
+    step: 5
+    unit_of_measurement: "%"
+    icon: mdi:battery-arrow-down
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: 20
+
+  - platform: template
+    name: "Battery Exercise Discharge Floor"
+    id: exercise_low_discharge_soc
+    min_value: 5
+    max_value: 25
+    step: 1
+    unit_of_measurement: "%"
+    icon: mdi:battery-alert
+    entity_category: config
+    optimistic: true
+    restore_value: true
+    initial_value: 12
+
+#------------------------------------------------------------------------------
+# Exercise Mode Automation
+# Runs every 30s. When exercise mode is active:
+#   Charge side  — stops charging at high threshold, resumes at low threshold
+#   Discharge floor — stops discharging at floor to avoid BMS hard cutoff;
+#                     re-enables once SOC recovers to the low SOC threshold
+#------------------------------------------------------------------------------
+interval:
+  - interval: 30s
+    then:
+      - lambda: |-
+          if (!id(battery_exercise_mode).state) return;
+          float soc = id(${exercise_bms_id}_state_of_charge).state;
+          if (isnan(soc)) return;
+
+          // Charge side
+          if (soc >= id(exercise_high_soc).state) {
+            id(${exercise_bms_id}_charging).turn_off();
+          } else if (soc <= id(exercise_low_soc).state) {
+            id(${exercise_bms_id}_charging).turn_on();
+          }
+
+          // Discharge floor — prevents reaching BMS hard cutoff
+          // Re-enables once SOC recovers to the charge-resume threshold
+          if (soc <= id(exercise_low_discharge_soc).state) {
+            id(${exercise_bms_id}_discharging).turn_off();
+          } else if (soc >= id(exercise_low_soc).state) {
+            id(${exercise_bms_id}_discharging).turn_on();
+          }
 
 #------------------------------------------------------------------------------
 # Button Behavior

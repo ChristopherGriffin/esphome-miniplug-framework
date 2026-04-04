@@ -53,9 +53,10 @@
 # FREEZE PROTECTION BEHAVIOR:
 #   - Restore mode: ALWAYS_OFF (safe default for heaters)
 #   - LED follows relay state
-#   - Auto-ON when freeze_alert is true (checked every 30s)
-#   - Auto-OFF when freeze_alert is false
-#   - Button can toggle manually, but freeze protection re-enables within 30s
+#   - Auto-ON when freeze_alert is true, auto-OFF when cleared
+#   - Fires on every HA state update (on_state) — handles boot and reconnects
+#     immediately without a polling interval
+#   - Button can toggle manually, but freeze protection re-asserts on next HA update
 #
 # USAGE:
 #   substitutions:
@@ -113,17 +114,23 @@ switch:
 #------------------------------------------------------------------------------
 binary_sensor:
   # Import freeze alert from Home Assistant
+  # on_state fires on every HA state update — handles boot, reconnects, and
+  # live changes without needing a polling interval.
   - platform: homeassistant
     id: freeze_alert
     entity_id: input_boolean.freeze_alert
     name: "Freeze Alert"
     device_class: cold
-    on_press:
-      - logger.log: "Freeze Alert ACTIVATED - turning on heater"
-      - switch.turn_on: heater
-    on_release:
-      - logger.log: "Freeze Alert CLEARED - turning off heater"
-      - switch.turn_off: heater
+    on_state:
+      - if:
+          condition:
+            binary_sensor.is_on: freeze_alert
+          then:
+            - logger.log: "Freeze Alert ACTIVATED - turning on heater"
+            - switch.turn_on: heater
+          else:
+            - logger.log: "Freeze Alert CLEARED - turning off heater"
+            - switch.turn_off: heater
 
   # Heating active - relay ON and power in normal range
   - platform: template
@@ -229,10 +236,10 @@ interval:
                   id(power).state, id(power_threshold_max).state);
             - switch.turn_off: heater
 
-  # Freeze protection & undercurrent logging - runs every 30s
+  # Undercurrent logging - runs every 30s
+  # (actual fault detection is in binary_sensor with delayed_on filter)
   - interval: 30s
     then:
-      # Log undercurrent warning (actual fault detection is in binary_sensor with delay)
       - if:
           condition:
             and:
@@ -243,16 +250,6 @@ interval:
             - lambda: |-
                 ESP_LOGW("heater", "UNDERCURRENT: Power %.1fW below min %.0fW - Check heat source",
                   id(power).state, id(power_threshold_min).state);
-
-      # Freeze protection enforcement
-      - if:
-          condition:
-            and:
-              - binary_sensor.is_on: freeze_alert
-              - switch.is_off: heater
-          then:
-            - logger.log: "Freeze protection: Re-enabling heater"
-            - switch.turn_on: heater
 
 #------------------------------------------------------------------------------
 # Button Behavior - Toggle heater manually
