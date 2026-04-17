@@ -3,67 +3,63 @@
 #==============================================================================
 # File: functions/miniplug_appliance.yaml
 #
-# Monitors appliance power consumption to detect running/idle/off states.
-# Supports two modes:
-#   - Binary: Single threshold (Running/Off)
-#   - Staged: Two thresholds (Active/Idle/Off with Running = Active OR Idle)
+# Monitors appliance power consumption across four levels driven by three
+# configurable thresholds. The meaning of each level is entirely user-defined
+# via the transition messages — the same file works for a coffee maker, a
+# dishwasher, a space heater, etc. just by setting different messages and
+# threshold values.
 #
-# DEPENDENCIES:
-#   - Hardware package providing:
-#       - relay_output      : GPIO output for relay (or relay switch)
-#       - relay_led         : Internal light for relay status LED
-#       - on_button_press   : Script called when button pressed
-#       - power             : Power sensor (W)
-#   - esp_common.yaml providing:
-#       - device_time       : Time component
+# HOW LEVELS WORK:
+#   Level 1 : power < Level 2 Min             (typically: off / idle / unplugged)
+#   Level 2 : Level 2 Min <= power < Level 3 Min
+#   Level 3 : Level 3 Min <= power < Level 4 Min
+#   Level 4 : power >= Level 4 Min            (typically: full load / overcurrent)
 #
-# PROVIDES:
-#   IDs:
-#     - appliance          : Switch entity for the relay
-#     - running            : Binary sensor - appliance is consuming power
-#     - cycle_complete     : Binary sensor - fires when Running goes false
-#     - appliance_state    : Text sensor - "Running"/"Off" or "Active"/"Idle"/"Off"
-#     - monitor_mode       : Select - Binary or Staged
-#     - power_threshold    : Number - threshold for Binary mode
-#     - threshold_high     : Number - high threshold for Staged mode
-#     - threshold_low      : Number - low threshold for Staged mode
-#     - button_enabled     : Select - enable/disable physical button
+#   Each threshold is the MINIMUM wattage required to ENTER that level.
+#   e.g. "Level 3 Min = 100W" means the appliance must draw at least 100W
+#   before the state changes to Level 3.
 #
-# ENTITIES EXPOSED TO HOME ASSISTANT:
-#   Switches:
-#     - Appliance          : Relay control (default ALWAYS_ON for monitoring)
-#   Binary Sensors:
-#     - Running            : True when appliance is consuming power above threshold
-#     - Cycle Complete     : Momentarily true when appliance stops running
-#   Text Sensors:
-#     - State              : "Running"/"Off" (Binary) or "Active"/"Idle"/"Off" (Staged)
-#   Selects:
-#     - Monitor Mode       : Binary or Staged
-#     - Button             : Enabled or Disabled
-#   Numbers:
-#     - Power Threshold    : Single threshold for Binary mode (default 50W)
-#     - Threshold High     : Upper threshold for Staged mode (default 1000W)
-#     - Threshold Low      : Lower threshold for Staged mode (default 50W)
+# HOW DEBOUNCE WORKS (Confirm Time):
+#   A level change is only confirmed after the new level has been stable for
+#   Confirm Time seconds. This prevents false transitions from brief mid-cycle
+#   power dips (e.g. a dishwasher dropping to 0W between wash stages).
+#   Debounce only applies when leaving an elevated state — transitions FROM
+#   Level 1 upward always fire immediately so start events are never delayed.
+#   Resolution is 2s (the polling interval). Set to 0 for immediate transitions.
 #
-# MODES:
-#   Binary Mode:
-#     - Running = power >= power_threshold
-#     - State shows "Running" or "Off"
-#     - Use for simple on/off appliances (dishwasher, washing machine)
+# HOW MESSAGES WORK:
+#   Each level has one configurable message (set via web UI or HA).
+#   When a confirmed level transition occurs, the message for the new level
+#   is published to the Notification sensor. Leave blank to silence that level.
+#   Downstream HA automations should trigger on the Notification sensor — it
+#   only fires on real confirmed transitions, not every poll cycle.
 #
-#   Staged Mode:
-#     - Running = power >= threshold_low
-#     - State shows "Active" (>= high), "Idle" (>= low), or "Off" (< low)
-#     - Use for multi-state appliances (coffee maker: brewing/warming/off)
+# MESSAGE STORAGE:
+#   Messages are stored in flash-backed globals so they survive power cuts.
+#   Each is capped at 24 characters (max_restore_data_length) — unconstrained
+#   strings caused flash corruption and lost messages on reboot in testing.
 #
-# LED BEHAVIOR:
-#     - Follows Running sensor (ON when appliance is running)
+# DEPENDENCIES (provided by hardware package):
+#   - relay_output    : GPIO output driving the relay
+#   - on_button_press : Script called on short button press
+#   - on_button_hold  : Script called on long button press (3s+)
+#   - power           : Power sensor in watts (W)
+#
+# PROVIDES (consumed by HA automations and dashboards):
+#   - appliance           : Switch — controls the relay
+#   - appliance_state     : Text sensor — current level ("Level 1" … "Level 4")
+#   - notification_message: Text sensor — fires on each confirmed transition
+#   - level_2_min         : Number — min W to reach Level 2 (default 5W)
+#   - level_3_min         : Number — min W to reach Level 3 (default 50W)
+#   - level_4_min         : Number — min W to reach Level 4 (default 1000W)
+#   - confirm_time        : Number — debounce window in seconds (default 0)
+#   - button_enabled      : Select — enable/disable physical button toggle
 #
 # USAGE:
 #   substitutions:
-#     device_name: "dishwasher"
-#     friendly_name: "Dishwasher"
-#     name_no_dashes: "dishwasher"
+#     device_name: "coffee-maker"
+#     friendly_name: "Coffee Maker"
+#     name_no_dashes: "coffee_maker"
 #
 #   packages:
 #     base: !include common/esp_common.yaml
@@ -71,14 +67,68 @@
 #     function: !include functions/miniplug_appliance.yaml
 #==============================================================================
 
+esp8266:
+  restore_from_flash: true  # enables flash-backed globals; without this, message strings exceed the 512B RTC limit and are lost on power cut
+
+
 #------------------------------------------------------------------------------
-# Globals for State Tracking
+# Globals
 #------------------------------------------------------------------------------
 globals:
-  - id: was_running
-    type: bool
+  # Tracks the last confirmed level — used to detect transitions and suppress
+  # duplicate notifications. Not restored on boot so startup always re-evaluates.
+  - id: prev_appliance_state
+    type: std::string
     restore_value: no
-    initial_value: 'false'
+    initial_value: '""'
+
+  # Holds the level currently being evaluated for debounce confirmation.
+  # Resets whenever power returns to the confirmed level mid-wait.
+  - id: g_pending_state
+    type: std::string
+    restore_value: no
+    initial_value: '""'
+
+  # Counts how many 2s polling cycles the pending state has been stable.
+  # When ticks * 2s >= confirm_time, the transition is committed.
+  - id: g_pending_ticks
+    type: int
+    restore_value: no
+    initial_value: '0'
+
+  # Holds the last notification that was published. Flash-backed so the value
+  # survives a power cut and is republished to the sensor on the next boot.
+  # Note: because the sensor republishes on boot (update_interval: 6h), any HA
+  # automation triggered by Notification will also fire on reboot.
+  - id: g_last_notification
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24
+    initial_value: '""'
+
+  # Flash-backed message strings — one per level. Capped at 24 chars to prevent
+  # flash corruption; unconstrained strings caused lost messages on reboot.
+  - id: g_msg_to_l1
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24
+    initial_value: '""'
+  - id: g_msg_to_l2
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24
+    initial_value: '""'
+  - id: g_msg_to_l3
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24
+    initial_value: '""'
+  - id: g_msg_to_l4
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24
+    initial_value: '""'
+
 
 #------------------------------------------------------------------------------
 # Relay Switch
@@ -87,32 +137,17 @@ switch:
   - platform: output
     name: "Appliance"
     id: appliance
-    output: relay_output
+    output: relay_output  # relay_output is defined in the hardware package
     icon: mdi:power-socket-us
-    restore_mode: ALWAYS_ON
-    on_turn_on:
-      - light.turn_on: relay_led
-    on_turn_off:
-      - light.turn_off: relay_led
+    restore_mode: ALWAYS_ON  # relay returns to ON after a power cut — change if the appliance should stay off
+
 
 #------------------------------------------------------------------------------
-# Monitor Mode Select
+# Selects
 #------------------------------------------------------------------------------
 select:
-  - platform: template
-    name: "Monitor Mode"
-    id: monitor_mode
-    icon: mdi:gauge
-    options:
-      - "Binary"
-      - "Staged"
-    initial_option: "Binary"
-    optimistic: true
-    restore_value: true
-    entity_category: config
-    on_value:
-      - script.execute: update_appliance_state
-
+  # Allows the physical button to be disabled — useful when the plug is in an
+  # awkward location or the appliance should not be manually switched off.
   - platform: template
     name: "Button"
     id: button_enabled
@@ -125,19 +160,39 @@ select:
     restore_value: true
     entity_category: config
 
+
 #------------------------------------------------------------------------------
-# Threshold Configuration
+# Level Threshold Configuration
+# Named "Level X Min" so the direction is unambiguous in the web UI:
+# "Level 3 Min = 100W" means you need at least 100W to be IN Level 3.
+# Alphabetical sort in the web UI works in our favour: Level 2/3/4 Min stack
+# in the correct order.
 #------------------------------------------------------------------------------
 number:
-  # Binary mode threshold
   - platform: template
-    name: "Power Threshold"
-    id: power_threshold
+    name: "Level 2 Min"
+    id: level_2_min
+    icon: mdi:flash-outline
+    unit_of_measurement: W
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 3000
+    step: 0.5
+    initial_value: 5
+    optimistic: true
+    restore_value: true
+    on_value:
+      - script.execute: update_appliance_state  # re-evaluate immediately when threshold changes
+
+  - platform: template
+    name: "Level 3 Min"
+    id: level_3_min
     icon: mdi:flash
     unit_of_measurement: W
     entity_category: config
     mode: box
-    min_value: 1
+    min_value: 0
     max_value: 3000
     step: 1
     initial_value: 50
@@ -146,15 +201,14 @@ number:
     on_value:
       - script.execute: update_appliance_state
 
-  # Staged mode - high threshold
   - platform: template
-    name: "Threshold High"
-    id: threshold_high
+    name: "Level 4 Min"
+    id: level_4_min
     icon: mdi:flash-alert
     unit_of_measurement: W
     entity_category: config
     mode: box
-    min_value: 1
+    min_value: 0
     max_value: 3000
     step: 1
     initial_value: 1000
@@ -163,79 +217,113 @@ number:
     on_value:
       - script.execute: update_appliance_state
 
-  # Staged mode - low threshold
+  # How long (seconds) the new level must hold before the transition is committed.
+  # Uses the 2s poll as its clock — 900s = 450 ticks = 15 minutes.
+  # Only applies when leaving an elevated level; transitions from Level 1 are always immediate.
   - platform: template
-    name: "Threshold Low"
-    id: threshold_low
-    icon: mdi:flash-outline
-    unit_of_measurement: W
+    name: "Confirm Time"
+    id: confirm_time
+    icon: mdi:timer-check-outline
+    unit_of_measurement: s
     entity_category: config
     mode: box
-    min_value: 1
-    max_value: 3000
+    min_value: 0
+    max_value: 3600  # 1 hour max — dishwasher mid-cycle dips can need up to 15 min (900s)
     step: 1
-    initial_value: 50
+    initial_value: 0
     optimistic: true
     restore_value: true
-    on_value:
-      - script.execute: update_appliance_state
+
 
 #------------------------------------------------------------------------------
-# Binary Sensors
+# Transition Message Configuration
+# Set a message for each level in the web UI or HA. Leave blank to silence
+# that transition. Messages are stored in flash globals (not in the sensor
+# itself) so they survive reboots independently of the display.
 #------------------------------------------------------------------------------
-binary_sensor:
-  # Running - appliance is consuming power above threshold
+text:
+  # update_interval: 6h — lambda runs on boot to push the flash-restored global
+  # value back into the display sensor. "never" skips boot evaluation entirely,
+  # leaving the web UI and HA showing blank even though the stored value is intact.
   - platform: template
-    name: "Running"
-    id: running
-    icon: mdi:play-circle
-    device_class: running
-    lambda: |-
-      float pwr = id(power).state;
-      if (isnan(pwr)) return false;
+    name: "Msg: To Level 1"
+    id: msg_to_l1
+    icon: mdi:message-off-outline
+    mode: text
+    entity_category: config
+    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    lambda: 'return id(g_msg_to_l1);'
+    set_action:
+      - lambda: |-
+          id(g_msg_to_l1) = x;           // write to the flash-backed global (persists across reboots)
+          id(msg_to_l1).publish_state(x); // update the display immediately without waiting for the 6h poll
 
-      if (id(monitor_mode).state == "Binary") {
-        return pwr >= id(power_threshold).state;
-      } else {
-        // Staged mode: Running = above low threshold
-        return pwr >= id(threshold_low).state;
-      }
-    on_press:
-      - lambda: 'id(was_running) = true;'
-      - light.turn_on: relay_led
-    on_release:
-      - light.turn_off: relay_led
-      - if:
-          condition:
-            lambda: 'return id(was_running);'
-          then:
-            - binary_sensor.template.publish:
-                id: cycle_complete
-                state: ON
-            - delay: 1s
-            - binary_sensor.template.publish:
-                id: cycle_complete
-                state: OFF
-            - lambda: 'id(was_running) = false;'
-
-  # Cycle Complete - fires momentarily when Running goes false
   - platform: template
-    name: "Cycle Complete"
-    id: cycle_complete
-    icon: mdi:check-circle
-    device_class: problem
+    name: "Msg: To Level 2"
+    id: msg_to_l2
+    icon: mdi:message-outline
+    mode: text
+    entity_category: config
+    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    lambda: 'return id(g_msg_to_l2);'
+    set_action:
+      - lambda: |-
+          id(g_msg_to_l2) = x;
+          id(msg_to_l2).publish_state(x);
+
+  - platform: template
+    name: "Msg: To Level 3"
+    id: msg_to_l3
+    icon: mdi:message-arrow-right-outline
+    mode: text
+    entity_category: config
+    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    lambda: 'return id(g_msg_to_l3);'
+    set_action:
+      - lambda: |-
+          id(g_msg_to_l3) = x;
+          id(msg_to_l3).publish_state(x);
+
+  - platform: template
+    name: "Msg: To Level 4"
+    id: msg_to_l4
+    icon: mdi:message-alert-outline
+    mode: text
+    entity_category: config
+    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    lambda: 'return id(g_msg_to_l4);'
+    set_action:
+      - lambda: |-
+          id(g_msg_to_l4) = x;
+          id(msg_to_l4).publish_state(x);
+
 
 #------------------------------------------------------------------------------
-# State Text Sensor
+# Text Sensors
 #------------------------------------------------------------------------------
 text_sensor:
+  # Current confirmed level — safe to use in HA dashboards and conditions.
+  # Does NOT update during a pending debounce window; holds the last stable level.
   - platform: template
     name: "State"
     id: appliance_state
     icon: mdi:state-machine
 
+  # Fires only on confirmed level transitions. Wire HA automations to this —
+  # it carries the message text so the automation doesn't need to look it up.
+  # Blank messages are suppressed; the sensor only publishes when there is something to say.
+  # update_interval: 6h republishes the flash-restored global on boot so the last
+  # message is visible in the web UI and HA after a reset.
+  - platform: template
+    name: "Notification"
+    id: notification_message
+    icon: mdi:message-text
+    update_interval: 6h
+    lambda: 'return id(g_last_notification);'
+
+
 #------------------------------------------------------------------------------
-# State Update Script
+# Scripts
 #------------------------------------------------------------------------------
 script:
   - id: update_appliance_state
@@ -243,47 +331,110 @@ script:
       - lambda: |-
           float pwr = id(power).state;
           if (isnan(pwr)) {
+            // Power sensor not yet ready (e.g. immediately after boot) — skip this cycle
             id(appliance_state).publish_state("Unknown");
             return;
           }
 
-          std::string mode = id(monitor_mode).state;
-
-          if (mode == "Binary") {
-            if (pwr >= id(power_threshold).state) {
-              id(appliance_state).publish_state("Running");
-            } else {
-              id(appliance_state).publish_state("Off");
-            }
+          // Classify current wattage into a level based on the three thresholds
+          std::string raw_state;
+          if (pwr >= id(level_4_min).state) {
+            raw_state = "Level 4";
+          } else if (pwr >= id(level_3_min).state) {
+            raw_state = "Level 3";
+          } else if (pwr >= id(level_2_min).state) {
+            raw_state = "Level 2";
           } else {
-            // Staged mode
-            float high = id(threshold_high).state;
-            float low = id(threshold_low).state;
-
-            if (pwr >= high) {
-              id(appliance_state).publish_state("Active");
-            } else if (pwr >= low) {
-              id(appliance_state).publish_state("Idle");
-            } else {
-              id(appliance_state).publish_state("Off");
-            }
+            raw_state = "Level 1";
           }
 
-  # Button press handler
+          std::string confirmed = id(prev_appliance_state);
+
+          // First run after boot — set initial state immediately with no message,
+          // since there is no previous state to transition from
+          if (confirmed.empty()) {
+            id(prev_appliance_state) = raw_state;
+            id(appliance_state).publish_state(raw_state);
+            return;
+          }
+
+          // No change — clear any pending debounce and exit
+          if (raw_state == confirmed) {
+            id(g_pending_state) = "";
+            id(g_pending_ticks) = 0;
+            return;
+          }
+
+          // Leaving Level 1 always fires immediately — debounce is only needed
+          // when already running, to filter mid-cycle dips back down
+          if (confirmed == "Level 1") {
+            id(prev_appliance_state) = raw_state;
+            id(appliance_state).publish_state(raw_state);
+            id(g_pending_state) = "";
+            id(g_pending_ticks) = 0;
+            std::string msg = "";
+            if (raw_state == "Level 2") msg = id(g_msg_to_l2);
+            else if (raw_state == "Level 3") msg = id(g_msg_to_l3);
+            else if (raw_state == "Level 4") msg = id(g_msg_to_l4);
+            if (!msg.empty()) {
+              id(g_last_notification) = msg;  // persist to flash so the value survives a reset
+              id(notification_message).publish_state(msg);
+            }
+            return;
+          }
+
+          // Still at an elevated level — accumulate ticks for the new candidate state.
+          // If the raw reading keeps changing, ticks reset and the clock starts over.
+          if (raw_state != id(g_pending_state)) {
+            id(g_pending_state) = raw_state;
+            id(g_pending_ticks) = 1;
+          } else {
+            id(g_pending_ticks) += 1;
+          }
+
+          // Check whether the candidate has been stable long enough to commit.
+          // ceilf ensures partial seconds round up — e.g. 5s confirm = 3 ticks (6s actual).
+          int ticks_needed = (int)ceilf(id(confirm_time).state / 2.0f);
+          if (ticks_needed < 1) ticks_needed = 1;  // always require at least one clean reading
+          if (id(g_pending_ticks) < ticks_needed) return;  // not stable long enough yet — wait
+
+          // Transition confirmed — commit and fire the message for the new level
+          std::string new_state = id(g_pending_state);
+          id(prev_appliance_state) = new_state;
+          id(appliance_state).publish_state(new_state);
+          id(g_pending_state) = "";
+          id(g_pending_ticks) = 0;
+
+          std::string msg = "";
+          if (new_state == "Level 1") msg = id(g_msg_to_l1);
+          else if (new_state == "Level 2") msg = id(g_msg_to_l2);
+          else if (new_state == "Level 3") msg = id(g_msg_to_l3);
+          else if (new_state == "Level 4") msg = id(g_msg_to_l4);
+
+          if (!msg.empty()) {
+            id(g_last_notification) = msg;  // persist to flash so the value survives a reset
+            id(notification_message).publish_state(msg);  // blank messages are silenced — nothing sent
+          }
+
+  # Called by the hardware button handler — toggle the relay if button is enabled
   - id: on_button_press
     then:
       - if:
           condition:
-            lambda: 'return id(button_enabled).state == "Enabled";'
+            lambda: 'return id(button_enabled).current_option() == "Enabled";'
           then:
             - switch.toggle: appliance
 
+  # Long press hook — no action defined for appliance monitoring use case
   - id: on_button_hold
     then:
       - logger.log: "Long press (no action defined for appliance function)"
 
+
 #------------------------------------------------------------------------------
 # Power Change Handler
+# Runs every 2 seconds — this interval is the clock for the debounce system.
+# Increasing it reduces CPU load but coarsens the confirm_time resolution.
 #------------------------------------------------------------------------------
 interval:
   - interval: 2s

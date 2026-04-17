@@ -1,0 +1,115 @@
+#==============================================================================
+# Addon: Notify
+#==============================================================================
+# File: addon/notify.yaml
+#
+# Optional addon that fires a Home Assistant event whenever notification_message
+# is published by the function package. Completely decoupled - appliance.yaml
+# (or any function) requires no changes to support or exclude this addon.
+#
+# DEPENDENCIES:
+#   - Home Assistant API connection (api: block in device config)
+#   - notification_message : Text sensor provided by the function package
+#   - appliance_state      : Text sensor provided by the function package
+#                            (used to determine alert vs info level)
+#
+# USAGE:
+#   packages:
+#     notify: !include addon/notify.yaml
+#
+# HOME ASSISTANT EVENT:
+#   Event type : esphome.notification
+#   Data:
+#     device  : ESPHome device name
+#     level   : "alert" when appliance_state is Dead, otherwise "info"
+#     message : value of notification_message at time of transition
+#
+# HOME ASSISTANT AUTOMATION (add to automations.yaml or paste into the UI):
+
+#   - alias: "ESPHome Device Notification"
+#     description: >
+#       Handles all esphome.notification events. Routes alert-level events to a
+#       persistent notification and mobile push; info-level events to mobile only.
+#     trigger:
+#       - platform: event
+#         event_type: esphome.notification
+#     variables:
+#       device:  "{{ trigger.event.data.device }}"
+#       level:   "{{ trigger.event.data.level }}"
+#       message: "{{ trigger.event.data.message }}"
+#       title:   "{{ device | replace('-', ' ') | title }}"
+#     action:
+#       - choose:
+#           - conditions:
+#               - condition: template
+#                 value_template: "{{ level == 'alert' }}"
+#             sequence:
+#               # Persistent notification stays visible in HA until dismissed
+#               - service: persistent_notification.create
+#                 data:
+#                   title: "{{ title }}"
+#                   message: "{{ message }}"
+#                   notification_id: "esphome_{{ device }}"
+#               # Mobile push with high priority
+#               - service: notify.mobile_app_your_phone
+#                 data:
+#                   title: "{{ title }}"
+#                   message: "{{ message }}"
+#                   data:
+#                     priority: high
+#                     ttl: 0
+#         default:
+#           # Info-level: mobile push only, no persistent notification
+#           - service: notify.mobile_app_your_phone
+#             data:
+#               title: "{{ title }}"
+#               message: "{{ message }}"
+
+# NOTES:
+#   - Replace notify.mobile_app_your_phone with your actual notify service name.
+#   - To notify multiple phones add additional service calls in each branch.
+#   - The single automation handles every ESPHome device that includes this addon;
+#     the device name in the title tells you which one fired.
+#   - To suppress a specific transition silence it in the device web UI by
+#     blanking that message field - no automation changes needed.
+#==============================================================================
+
+# TEST - visible in web UI and HA:
+#   1. Set "Test Message" text field to whatever you want to inject
+#   2. Press the "Send Test Notification" button
+#   The message is published to notification_message, triggering the event below.
+text:
+  - platform: template
+    name: "Test Message"
+    id: test_notification_text
+    icon: mdi:message-text-clock
+    mode: text
+    entity_category: config
+    optimistic: true
+    restore_value: false
+    initial_value: "Test notification"
+
+button:
+  - platform: template
+    name: "Send Test Notification"
+    id: send_test_notification
+    icon: mdi:send
+    entity_category: config
+    on_press:
+      - text_sensor.template.publish:
+          id: notification_message
+          state: !lambda 'return id(test_notification_text).state;'
+
+text_sensor:
+  - id: !extend notification_message
+    on_value:
+      - if:
+          condition:
+            lambda: 'return !x.empty();'
+          then:
+            - homeassistant.event:
+                event: esphome.notification
+                data:
+                  device: !lambda 'return App.get_name();'
+                  level: !lambda 'return (id(appliance_state).state == "Dead") ? std::string("alert") : std::string("info");'
+                  message: !lambda 'return x;'

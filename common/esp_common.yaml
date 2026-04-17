@@ -92,6 +92,9 @@ wifi:
 
 captive_portal:
 
+mdns:
+  disabled: false
+
 #------------------------------------------------------------------------------
 # Time (synced from Home Assistant)
 #------------------------------------------------------------------------------
@@ -128,9 +131,9 @@ sensor:
     on_raw_value:
       then:
         - text_sensor.template.publish:
-            id: ${name_no_dashes}_uptime_human
+            id: uptime_human
             state: !lambda |-
-              int seconds = round(id(uptime_sensor).raw_state);
+              int seconds = round(id(uptime_sensor).get_raw_state());
               int days = seconds / (24 * 3600);
               seconds = seconds % (24 * 3600);
               int hours = seconds / 3600;
@@ -151,7 +154,7 @@ text_sensor:
   # Human-readable uptime (e.g., "2d 5h 30m 15s")
   - platform: template
     name: "Uptime"
-    id: ${name_no_dashes}_uptime_human
+    id: uptime_human
     icon: mdi:clock-start
     entity_category: diagnostic
 

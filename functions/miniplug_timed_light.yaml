@@ -277,7 +277,7 @@ text_sensor:
       };
 
       int on_minutes;
-      std::string src = id(on_source).state;
+      std::string src = id(on_source).current_option();
 
       if (src == "Sunrise") {
         if (sunrise.has_value()) {
@@ -327,7 +327,7 @@ text_sensor:
 
       // First get ON time (needed for Duration calculation)
       int on_minutes;
-      std::string on_src = id(on_source).state;
+      std::string on_src = id(on_source).current_option();
       if (on_src == "Sunrise") {
         if (sunrise.has_value()) {
           on_minutes = apply_offset(
@@ -352,7 +352,7 @@ text_sensor:
 
       // Now calculate OFF time
       int off_minutes;
-      std::string src = id(off_source).state;
+      std::string src = id(off_source).current_option();
 
       if (src == "Sunrise") {
         if (sunrise.has_value()) {
@@ -485,7 +485,7 @@ script:
           }
 
           // Calculate ON time
-          std::string on_src = id(on_source).state;
+          std::string on_src = id(on_source).current_option();
 
           if (on_src == "Sunrise") {
             if (!sunrise.has_value()) {
@@ -510,7 +510,7 @@ script:
           }
 
           // Calculate OFF time
-          std::string off_src = id(off_source).state;
+          std::string off_src = id(off_source).current_option();
 
           if (off_src == "Sunrise") {
             if (!sunrise.has_value()) {
