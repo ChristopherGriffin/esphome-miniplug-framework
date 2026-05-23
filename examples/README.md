@@ -15,7 +15,7 @@ Each example is ~15 lines — that's the whole point of the three-layer system.
 ## Adapting an Example
 
 1. Copy the example closest to what you need
-2. Change the four required substitutions (`device_name`, `device_description`, `friendly_name`, `name_no_dashes`)
+2. Change the three required substitutions (`device_name`, `device_description`, `friendly_name`)
 3. Swap the hardware line if you're using a different plug
 4. Add any function-specific substitutions (e.g., `latitude`/`longitude` for timed light)
 5. Compile and flash

@@ -1,0 +1,227 @@
+#==============================================================================
+# NodeMCU v2 (ESP8266) - Hardware Package
+#==============================================================================
+# File: hardware/nodemcuv2.yaml
+#
+# Hardware-specific configuration for NodeMCU v2 development board.
+# This is a general-purpose dev board with no built-in relay, power sensor,
+# or button. Function packages define all peripherals and bus configurations.
+#
+# DEPENDENCIES:
+#   - common/esp_common.yaml (provides esphome name/comment/friendly, logger,
+#     api, ota, wifi, time, etc.)
+#
+# REQUIRED SUBSTITUTIONS (from esp_common.yaml):
+#   - device_name        : ESPHome device name (lowercase, dashes ok)
+#   - friendly_name      : Human-readable device name
+#   - device_description : Short description of the device's purpose
+#
+# PROVIDES:
+#   IDs:
+#     - status_led          : Monochromatic light for connection status
+#     - status_led_output   : ESP8266 PWM output on GPIO2 (D4)
+#     - update_status_led   : Script to refresh LED based on connectivity
+#     - ota_in_progress     : Global bool for OTA state tracking
+#   Substitutions:
+#     - pin_a0, pin_d0..d8, pin_rx, pin_tx : All GPIO pin mappings as D-labels
+#     - status_led_pin                     : Alias for pin_d4 (GPIO2)
+#
+# LED BEHAVIOR (GPIO2 / D4 — onboard blue LED, active LOW):
+#   Fast blink (0.5s) : WiFi disconnected
+#   Solid ON          : WiFi connected, API disconnected
+#   Slow glow (2s)    : WiFi connected, API connected
+#
+# COMPATIBILITY NOTE:
+#   restore_from_flash is set to false. Functions that require flash-backed
+#   globals (e.g. miniplug_appliance) are NOT compatible with this board out
+#   of the box — flip the flag in your device config or pair with a different
+#   hardware package. Functions that only need RTC-backed restore_value
+#   (lamp, heater, timed_light, etc.) work fine.
+#
+# HARDWARE PINOUT (NodeMCU v2 / ESP-12E):
+#   ┌─────────────────────────────────────────────────────────┐
+#   │  D-Label  │  GPIO  │  Default Function  │  Notes        │
+#   ├─────────────────────────────────────────────────────────┤
+#   │  A0       │  ADC0  │  Analog Input      │  0-3.3V only  │
+#   │  D0       │  GPIO16│  General I/O       │  No PWM/I2C   │
+#   │  D1       │  GPIO5 │  I2C SCL           │  Safe, common │
+#   │  D2       │  GPIO4 │  I2C SDA           │  Safe, common │
+#   │  D3       │  GPIO0 │  General I/O       │  BOOT pin ¹   │
+#   │  D4       │  GPIO2 │  WiFi Status LED   │  BOOT pin ¹   │
+#   │  D5       │  GPIO14│  SPI SCLK          │  Safe, common │
+#   │  D6       │  GPIO12│  SPI MISO          │  Safe, common │
+#   │  D7       │  GPIO13│  SPI MOSI          │  Safe, common │
+#   │  D8       │  GPIO15│  SPI CS            │  BOOT pin ²   │
+#   │  RX       │  GPIO3 │  UART RX           │  Serial ³     │
+#   │  TX       │  GPIO1 │  UART TX           │  Serial ³     │
+#   └─────────────────────────────────────────────────────────┘
+#
+#   ¹ GPIO0/GPIO2 are boot-mode select pins. Both must be HIGH during
+#     boot. Pulled HIGH internally. Avoid driving LOW at startup or
+#     the board enters flash mode. Safe for outputs after boot, and
+#     for inputs with pullup.
+#
+#   ² GPIO15 must be LOW during boot. Has external pulldown on most
+#     NodeMCU boards. Safe as SPI CS or output. Avoid using as input
+#     with pullup.
+#
+#   ³ TX/RX are UART0. Using these pins disables serial logging.
+#     Set logger: baud_rate: 0 if repurposing TX/RX as GPIO.
+#
+#   PINS TO AVOID:
+#   - GPIO6-GPIO11 : Connected to onboard SPI flash. Do NOT use.
+#   - GPIO9/GPIO10 : May be available on some boards but are
+#                     connected to flash on most ESP-12E modules.
+#
+#   SAFE GENERAL-PURPOSE PINS (no boot restrictions):
+#   - D1 (GPIO5), D2 (GPIO4), D5 (GPIO14), D6 (GPIO12), D7 (GPIO13)
+#
+# USAGE:
+#   substitutions:
+#     device_name: "bbq-temp-logger"
+#     friendly_name: "BBQ Temp Logger"
+#     device_description: "BBQ Temperature Monitor"
+#
+#   packages:
+#     base: !include common/esp_common.yaml
+#     hardware: !include hardware/nodemcuv2.yaml
+#==============================================================================
+
+substitutions:
+  # ── Pin Map (D-labels → GPIO) ──────────────────────────────
+  # Use these substitutions in function packages for portability.
+  # e.g., cs_pin: ${pin_d0} instead of hardcoding GPIO16
+  pin_a0:  A0       # ADC - Analog input (0-3.3V, 10-bit)
+  pin_d0:  GPIO16   # No PWM, no I2C, no interrupts. Wake from deep sleep.
+  pin_d1:  GPIO5    # Safe. Common I2C SCL.
+  pin_d2:  GPIO4    # Safe. Common I2C SDA.
+  pin_d3:  GPIO0    # Boot pin (must be HIGH at boot). Safe after boot.
+  pin_d4:  GPIO2    # Boot pin. Onboard LED. Reserved for status_led.
+  pin_d5:  GPIO14   # Safe. Common SPI SCLK.
+  pin_d6:  GPIO12   # Safe. Common SPI MISO.
+  pin_d7:  GPIO13   # Safe. Common SPI MOSI.
+  pin_d8:  GPIO15   # Boot pin (must be LOW at boot). OK for SPI CS / output.
+  pin_rx:  GPIO3    # UART RX. Disables serial logging if used as GPIO.
+  pin_tx:  GPIO1    # UART TX. Disables serial logging if used as GPIO.
+
+  # Status LED pin (alias for pin_d4 / GPIO2)
+  status_led_pin: GPIO2
+
+#------------------------------------------------------------------------------
+# ESP8266 Board Configuration
+#------------------------------------------------------------------------------
+esp8266:
+  board: nodemcuv2
+  restore_from_flash: false  # restore_value entities live in RTC (~512B). Override to true if a function package needs flash-backed globals.
+
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# OTA Tracking
+#------------------------------------------------------------------------------
+globals:
+  - id: ota_in_progress
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+#------------------------------------------------------------------------------
+# Connectivity Callbacks (triggers LED update on state changes)
+#------------------------------------------------------------------------------
+api:
+  on_client_connected:
+    - script.execute: update_status_led
+  on_client_disconnected:
+    - script.execute: update_status_led
+
+wifi:
+  on_connect:
+    - script.execute: update_status_led
+  on_disconnect:
+    - script.execute: update_status_led
+
+#------------------------------------------------------------------------------
+# Status LED Output (PWM for glow effect)
+#------------------------------------------------------------------------------
+output:
+  - platform: esp8266_pwm
+    id: status_led_output
+    pin:
+      number: ${status_led_pin}
+      inverted: true
+    frequency: 1000Hz
+
+#------------------------------------------------------------------------------
+# Status LED Light Component (D4 / GPIO2 — active LOW)
+#------------------------------------------------------------------------------
+light:
+  - platform: monochromatic
+    id: status_led
+    output: status_led_output
+    internal: true
+    default_transition_length: 0ms
+    effects:
+      # Fast blink for WiFi disconnected
+      - strobe:
+          name: "Fast Blink"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 500ms
+            - state: false
+              duration: 500ms
+      # Slow glow for fully connected (WiFi + API)
+      - lambda:
+          name: "Slow Glow"
+          update_interval: 40ms
+          lambda: |-
+            static float phase = 0;
+            phase += 0.05;  // ~2s full cycle (50 steps * 40ms * 2)
+            if (phase > 3.14159) phase = -3.14159;
+            float brightness = (sin(phase) + 1.0) / 2.0;  // 0.0 to 1.0
+            auto call = id(status_led).turn_on();
+            call.set_brightness(brightness);
+            call.set_transition_length(0);
+            call.perform();
+
+#------------------------------------------------------------------------------
+# Status LED Control Script
+#------------------------------------------------------------------------------
+script:
+  - id: update_status_led
+    then:
+      - if:
+          condition:
+            not:
+              wifi.connected:
+          then:
+            - light.turn_on:
+                id: status_led
+                brightness: 100%
+                effect: "Fast Blink"
+          else:
+            - if:
+                condition:
+                  api.connected:
+                then:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: "Slow Glow"
+                else:
+                  - light.turn_on:
+                      id: status_led
+                      brightness: 100%
+                      effect: none
+
+#------------------------------------------------------------------------------
+# Periodic Status Check (backup for missed events)
+#------------------------------------------------------------------------------
+interval:
+  - interval: 30s
+    then:
+      - script.execute: update_status_led

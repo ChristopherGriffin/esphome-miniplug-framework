@@ -13,7 +13,6 @@
 # REQUIRED SUBSTITUTIONS:
 #   - device_name        : ESPHome device name (lowercase, dashes ok)
 #   - friendly_name      : Human-readable device name
-#   - name_no_dashes     : Device name without dashes for IDs
 #   - device_description : Device description/comment
 #
 # PROVIDES:
@@ -50,15 +49,17 @@
 #     - Power          : Real-time power (W)
 #     - Current        : Current draw (A)
 #     - Voltage        : Line voltage (V)
-#     - Energy         : Cumulative energy (kWh)
+#     - Energy         : Lifetime energy (kWh) — integral of filtered power.
+#                        For daily/weekly/monthly views, configure HA's
+#                        utility_meter on this sensor (cycle: daily, etc).
 #     - Power Factor   : Power factor
-#     - Daily Energy   : Daily cumulative energy (kWh)
+#   Buttons:
+#     - Reset Total Energy : Zeroes the displayed Energy (offset capture).
 #
 # USAGE:
 #   substitutions:
 #     device_name: "my-lamp"
 #     friendly_name: "My Lamp"
-#     name_no_dashes: "my_lamp"
 #     device_description: "Living room lamp on Sonoff S31"
 #
 #   packages:
@@ -78,13 +79,19 @@ substitutions:
   # For lamp/appliance monitoring, can increase to 30s or 60s to reduce traffic
   power_update_interval: "5s"
 
+  # Power deadband (W) — readings below this clamp to 0. The CSE7766 produces
+  # unreliable values below ~3W (especially for non-resistive loads like LED
+  # bulbs), and those spurious bursts integrate into bogus daily-energy totals.
+  # Override per-device if the load legitimately draws sub-1W power.
+  power_deadband: "1.0"
+
 #------------------------------------------------------------------------------
 # ESP8266 Board Configuration
 #------------------------------------------------------------------------------
 esp8266:
   board: esp12e
   early_pin_init: false
-  restore_from_flash: false
+  restore_from_flash: true  # persist restore_value entities (selects, numbers, datetimes, switches) across power cuts and reflashes; without this they live in RTC memory and are lost
 
 esphome:
   name: ${device_name}
@@ -261,6 +268,19 @@ interval:
       - script.execute: update_status_led
 
 #------------------------------------------------------------------------------
+# Energy Reset State
+# Per-boot offset used by the "Reset Total Energy" button to zero the displayed
+# Energy. Not flash-persisted on purpose: the CSE7766's lifetime counter resets
+# to 0 on every boot, so persisting the offset across reboots would yield
+# negative readings until the chip catches back up to the old offset value.
+#------------------------------------------------------------------------------
+globals:
+  - id: energy_offset
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+
+#------------------------------------------------------------------------------
 # Power Monitoring (CSE7766)
 #------------------------------------------------------------------------------
 sensor:
@@ -292,15 +312,14 @@ sensor:
       device_class: power
       filters:
         - throttle_average: ${power_update_interval}
-    energy:
-      name: "Energy"
-      id: energy
-      unit_of_measurement: kWh
-      accuracy_decimals: 2
-      state_class: total_increasing
-      device_class: energy
-      filters:
-        - throttle: ${power_update_interval}
+        # Deadband: clamp unreliable low-end readings to 0 so total_daily_energy
+        # doesn't integrate phantom CSE7766 bursts at sub-threshold loads.
+        - lambda: 'return x < ${power_deadband} ? 0.0f : x;'
+    # Note: cse7766's energy block intentionally omitted. The chip accumulates
+    # energy from raw pulse output BEFORE our power deadband filter runs, so
+    # at low loads (LED bulbs, idle electronics) phantom pulses bloat the total
+    # to nonsense values (e.g. 0.05 kWh after 12s with 1.6W actual draw). We
+    # compute lifetime energy from the filtered power sensor below instead.
     power_factor:
       name: "Power Factor"
       accuracy_decimals: 2
@@ -309,7 +328,44 @@ sensor:
       filters:
         - throttle_average: ${power_update_interval}
 
-  - platform: total_daily_energy
-    name: "Daily Energy"
-    power_id: power
-    accuracy_decimals: 2
+  # Lifetime energy = integral of deadband-filtered power. Internal source
+  # for the displayed Energy sensor below; not exposed to HA directly so the
+  # offset-based reset can subtract from a clean baseline.
+  - platform: integration
+    id: energy_raw
+    sensor: power
+    time_unit: h
+    internal: true
+    restore: false
+    filters:
+      - multiply: 0.001  # W·h -> kWh
+
+  # Lifetime Energy with reset support. Subtracts the offset that the
+  # Reset Total Energy button captures, so we can zero the display without
+  # touching the integration accumulator.
+  - platform: template
+    name: "Energy"
+    id: energy
+    unit_of_measurement: kWh
+    accuracy_decimals: 3
+    state_class: total_increasing
+    device_class: energy
+    update_interval: ${power_update_interval}
+    lambda: 'return id(energy_raw).state - id(energy_offset);'
+
+#------------------------------------------------------------------------------
+# Energy Reset Button
+# Captures the chip's current raw value as the new offset, so the displayed
+# Energy sensor immediately reads 0 and accumulates from there. Survives until
+# the next reboot (after which the chip is at 0 anyway).
+#------------------------------------------------------------------------------
+button:
+  - platform: template
+    name: "Reset Total Energy"
+    icon: mdi:restart
+    entity_category: config
+    on_press:
+      - lambda: |-
+          id(energy_offset) = id(energy_raw).state;
+          id(energy).publish_state(0.0f);
+          ESP_LOGI("energy_reset", "Energy counter reset (offset=%.3f kWh)", id(energy_offset));

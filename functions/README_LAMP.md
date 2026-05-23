@@ -54,7 +54,6 @@ substitutions:
   device_name: "living-room-lamp"
   device_description: "Floor lamp next to the couch"
   friendly_name: "Living Room Lamp"
-  name_no_dashes: "living_room_lamp"
 
 packages:
   base: !include common/esp_common.yaml

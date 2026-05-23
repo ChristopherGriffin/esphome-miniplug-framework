@@ -89,7 +89,6 @@
 #   substitutions:
 #     device_name: "timed-light"
 #     friendly_name: "Timed Light"
-#     name_no_dashes: "timed_light"
 #     latitude: "33.4484"
 #     longitude: "-112.0740"
 #

@@ -9,7 +9,6 @@ substitutions:
   device_name: "bedroom-lamp"
   device_description: "Bedroom nightstand lamp"
   friendly_name: "Bedroom Lamp"
-  name_no_dashes: "bedroom_lamp"
 
 packages:
   base: !include ../common/esp_common.yaml

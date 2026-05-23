@@ -124,7 +124,6 @@ substitutions:
   device_name: "dishwasher"
   device_description: "Dishwasher power monitor and cycle detector"
   friendly_name: "Dishwasher"
-  name_no_dashes: "dishwasher"
 
 packages:
   base: !include common/esp_common.yaml

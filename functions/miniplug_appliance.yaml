@@ -19,20 +19,25 @@
 #   e.g. "Level 3 Min = 100W" means the appliance must draw at least 100W
 #   before the state changes to Level 3.
 #
-# HOW DEBOUNCE WORKS (Confirm Time):
-#   A level change is only confirmed after the new level has been stable for
-#   Confirm Time seconds. This prevents false transitions from brief mid-cycle
-#   power dips (e.g. a dishwasher dropping to 0W between wash stages).
-#   Debounce only applies when leaving an elevated state — transitions FROM
-#   Level 1 upward always fire immediately so start events are never delayed.
-#   Resolution is 2s (the polling interval). Set to 0 for immediate transitions.
+# HOW DEBOUNCE WORKS (Rising/Falling Confirm):
+#   Each level transition must hold the new wattage stably before committing.
+#   Two timers control how long, depending on direction:
+#     - Rising Confirm  : delay when moving to a HIGHER level (filters brief
+#                         upward spikes — e.g. pump kick draws 200W for a moment
+#                         then settles back). Default 0.
+#     - Falling Confirm : delay when moving to a LOWER level (filters mid-cycle
+#                         power dips — e.g. a dishwasher dropping to 0W between
+#                         wash stages). Typically the larger of the two —
+#                         this is the "is it really done?" filter. Default 0.
+#   Resolution is 2s (the debounce cycle). Minimum confirm is one tick (~2s) —
+#   either timer at 0 still waits one clean reading before committing.
 #
 # HOW MESSAGES WORK:
 #   Each level has one configurable message (set via web UI or HA).
 #   When a confirmed level transition occurs, the message for the new level
 #   is published to the Notification sensor. Leave blank to silence that level.
 #   Downstream HA automations should trigger on the Notification sensor — it
-#   only fires on real confirmed transitions, not every poll cycle.
+#   only fires on real confirmed transitions, not every debounce cycle.
 #
 # MESSAGE STORAGE:
 #   Messages are stored in flash-backed globals so they survive power cuts.
@@ -44,22 +49,27 @@
 #   - on_button_press : Script called on short button press
 #   - on_button_hold  : Script called on long button press (3s+)
 #   - power           : Power sensor in watts (W)
+#   - On ESP8266, the hardware package must enable restore_from_flash so the
+#     24-char message globals survive power cuts. Hardware that disables it
+#     (e.g. nodemcuv2) is incompatible with this function.
 #
 # PROVIDES (consumed by HA automations and dashboards):
 #   - appliance           : Switch — controls the relay
 #   - appliance_state     : Text sensor — current level ("Level 1" … "Level 4")
-#   - notification_message: Text sensor — fires on each confirmed transition
+#   - notification_message: Text sensor — published on each confirmed transition
+#                           (blank messages are suppressed); also republished
+#                           from flash on boot so the last value is visible after a reset
 #   - level_2_min         : Number — min W to reach Level 2 (default 5W)
 #   - level_3_min         : Number — min W to reach Level 3 (default 50W)
 #   - level_4_min         : Number — min W to reach Level 4 (default 1000W)
-#   - confirm_time        : Number — debounce window in seconds (default 0)
+#   - rising_confirm      : Number — debounce window when moving up (default 0)
+#   - falling_confirm     : Number — debounce window when moving down (default 0)
 #   - button_enabled      : Select — enable/disable physical button toggle
 #
 # USAGE:
 #   substitutions:
 #     device_name: "coffee-maker"
 #     friendly_name: "Coffee Maker"
-#     name_no_dashes: "coffee_maker"
 #
 #   packages:
 #     base: !include common/esp_common.yaml
@@ -67,8 +77,22 @@
 #     function: !include functions/miniplug_appliance.yaml
 #==============================================================================
 
-esp8266:
-  restore_from_flash: true  # enables flash-backed globals; without this, message strings exceed the 512B RTC limit and are lost on power cut
+
+#------------------------------------------------------------------------------
+# Boot-time restore
+# Republish flash-backed globals into their display sensors so the last known
+# messages and notification are visible in the web UI and HA after a reset.
+#------------------------------------------------------------------------------
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          id(msg_to_l1).publish_state(id(g_msg_to_l1));
+          id(msg_to_l2).publish_state(id(g_msg_to_l2));
+          id(msg_to_l3).publish_state(id(g_msg_to_l3));
+          id(msg_to_l4).publish_state(id(g_msg_to_l4));
+          id(notification_message).publish_state(id(g_last_notification));
 
 
 #------------------------------------------------------------------------------
@@ -89,7 +113,7 @@ globals:
     restore_value: no
     initial_value: '""'
 
-  # Counts how many 2s polling cycles the pending state has been stable.
+  # Counts how many 2s cycles the pending state has been stable.
   # When ticks * 2s >= confirm_time, the transition is committed.
   - id: g_pending_ticks
     type: int
@@ -97,9 +121,10 @@ globals:
     initial_value: '0'
 
   # Holds the last notification that was published. Flash-backed so the value
-  # survives a power cut and is republished to the sensor on the next boot.
-  # Note: because the sensor republishes on boot (update_interval: 6h), any HA
-  # automation triggered by Notification will also fire on reboot.
+  # survives a power cut and is republished to the sensor on the next boot
+  # via the on_boot handler. Note: HA automations triggered by state transitions
+  # will not re-fire because the same value is republished, and the notify
+  # addon's dedup global suppresses duplicate event sends.
   - id: g_last_notification
     type: std::string
     restore_value: true
@@ -217,18 +242,35 @@ number:
     on_value:
       - script.execute: update_appliance_state
 
-  # How long (seconds) the new level must hold before the transition is committed.
-  # Uses the 2s poll as its clock — 900s = 450 ticks = 15 minutes.
-  # Only applies when leaving an elevated level; transitions from Level 1 are always immediate.
+  # Debounce window when moving UP to a higher level (filters brief upward
+  # spikes — e.g. a pump kick to 200W that settles back to 100W). Uses the 2s
+  # interval as its clock; minimum effective wait is one tick (~2s) even at 0.
   - platform: template
-    name: "Confirm Time"
-    id: confirm_time
-    icon: mdi:timer-check-outline
+    name: "Rising Confirm"
+    id: rising_confirm
+    icon: mdi:timer-plus-outline
     unit_of_measurement: s
     entity_category: config
     mode: box
     min_value: 0
-    max_value: 3600  # 1 hour max — dishwasher mid-cycle dips can need up to 15 min (900s)
+    max_value: 3600
+    step: 1
+    initial_value: 0
+    optimistic: true
+    restore_value: true
+
+  # Debounce window when moving DOWN to a lower level (filters mid-cycle dips
+  # so the appliance isn't declared "done" between heating bursts). Typically
+  # the larger of the two timers. 900s = 15 min, 1800s = 30 min.
+  - platform: template
+    name: "Falling Confirm"
+    id: falling_confirm
+    icon: mdi:timer-minus-outline
+    unit_of_measurement: s
+    entity_category: config
+    mode: box
+    min_value: 0
+    max_value: 3600  # 1 hour max — long mid-cycle dips on slow appliances may need up to an hour
     step: 1
     initial_value: 0
     optimistic: true
@@ -242,21 +284,20 @@ number:
 # itself) so they survive reboots independently of the display.
 #------------------------------------------------------------------------------
 text:
-  # update_interval: 6h — lambda runs on boot to push the flash-restored global
-  # value back into the display sensor. "never" skips boot evaluation entirely,
-  # leaving the web UI and HA showing blank even though the stored value is intact.
+  # update_interval: never — the on_boot handler pushes the flash-restored global
+  # value into the display on startup.
   - platform: template
     name: "Msg: To Level 1"
     id: msg_to_l1
     icon: mdi:message-off-outline
     mode: text
     entity_category: config
-    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    update_interval: never
     lambda: 'return id(g_msg_to_l1);'
     set_action:
       - lambda: |-
           id(g_msg_to_l1) = x;           // write to the flash-backed global (persists across reboots)
-          id(msg_to_l1).publish_state(x); // update the display immediately without waiting for the 6h poll
+          id(msg_to_l1).publish_state(x); // update the display immediately
 
   - platform: template
     name: "Msg: To Level 2"
@@ -264,7 +305,7 @@ text:
     icon: mdi:message-outline
     mode: text
     entity_category: config
-    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    update_interval: never
     lambda: 'return id(g_msg_to_l2);'
     set_action:
       - lambda: |-
@@ -277,7 +318,7 @@ text:
     icon: mdi:message-arrow-right-outline
     mode: text
     entity_category: config
-    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    update_interval: never
     lambda: 'return id(g_msg_to_l3);'
     set_action:
       - lambda: |-
@@ -290,7 +331,7 @@ text:
     icon: mdi:message-alert-outline
     mode: text
     entity_category: config
-    update_interval: 6h  # republishes flash-restored global to display on boot; "never" skips boot eval leaving UI blank
+    update_interval: never
     lambda: 'return id(g_msg_to_l4);'
     set_action:
       - lambda: |-
@@ -312,13 +353,13 @@ text_sensor:
   # Fires only on confirmed level transitions. Wire HA automations to this —
   # it carries the message text so the automation doesn't need to look it up.
   # Blank messages are suppressed; the sensor only publishes when there is something to say.
-  # update_interval: 6h republishes the flash-restored global on boot so the last
+  # The on_boot handler republishes the flash-restored global so the last
   # message is visible in the web UI and HA after a reset.
   - platform: template
     name: "Notification"
     id: notification_message
     icon: mdi:message-text
-    update_interval: 6h
+    update_interval: never
     lambda: 'return id(g_last_notification);'
 
 
@@ -392,9 +433,13 @@ script:
             id(g_pending_ticks) += 1;
           }
 
-          // Check whether the candidate has been stable long enough to commit.
-          // ceilf ensures partial seconds round up — e.g. 5s confirm = 3 ticks (6s actual).
-          int ticks_needed = (int)ceilf(id(confirm_time).state / 2.0f);
+          // Pick the debounce window based on direction. Level strings
+          // ("Level 1"…"Level 4") sort lexicographically in numeric order, so
+          // a string compare tells us whether we're going up or down.
+          float ct = (raw_state > confirmed)
+            ? id(rising_confirm).state    // moving up between elevated levels
+            : id(falling_confirm).state;  // falling toward a lower level
+          int ticks_needed = (int)ceilf(ct / 2.0f);
           if (ticks_needed < 1) ticks_needed = 1;  // always require at least one clean reading
           if (id(g_pending_ticks) < ticks_needed) return;  // not stable long enough yet — wait
 

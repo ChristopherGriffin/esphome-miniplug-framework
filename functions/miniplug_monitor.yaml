@@ -18,7 +18,6 @@
 #   substitutions:
 #     device_name: "battery-monitor"
 #     friendly_name: "Battery Monitor"
-#     name_no_dashes: "battery_monitor"
 #
 #   packages:
 #     base: !include common/esp_common.yaml

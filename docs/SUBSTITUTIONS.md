@@ -10,7 +10,6 @@ These substitutions are referenced by the common and hardware packages. Every de
 |-------------|---------|---------|-------------|
 | `device_name` | `"living-room-lamp"` | Common, Hardware | ESPHome device name. Lowercase, dashes OK. Becomes the mDNS hostname. |
 | `friendly_name` | `"Living Room Lamp"` | Common, Hardware | Human-readable name shown in Home Assistant. |
-| `name_no_dashes` | `"living_room_lamp"` | Common | Used for internal IDs (ESPHome IDs can't have dashes). |
 | `device_description` | `"Floor lamp in living room"` | Common, Hardware | Comment stored in the device config. Shows in ESPHome dashboard. |
 
 ## Hardware-Specific (Defined by Hardware Profiles)
@@ -76,7 +75,6 @@ Substitutions defined in your device config override defaults from any package. 
 substitutions:
   device_name: "my-heater"
   friendly_name: "My Heater"
-  name_no_dashes: "my_heater"
   device_description: "Garage heater"
   # Override the default 2s update interval for faster monitoring
   power_update_interval: "1s"

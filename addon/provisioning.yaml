@@ -1,0 +1,41 @@
+#==============================================================================
+# Addon: Provisioning (AP Fallback + Captive Portal)
+#==============================================================================
+# File: addon/provisioning.yaml
+#
+# Adds an AP fallback mode and captive portal to a device that already has a
+# WiFi STA configuration. When the device can't reach its configured WiFi
+# (different network, wrong password, AP down), it falls back to broadcasting
+# its own AP. A phone connecting to that AP gets the captive portal popup
+# where the user can enter new SSID/password — no case-cracking required.
+#
+# CROSS-PLATFORM:
+#   Works on ESP8266, ESP32, and ESP32-C3. No BLE / Improv requirements.
+#
+# DEPENDENCIES:
+#   A wifi: block must already be defined (e.g. via common/connectivity.yaml).
+#   This file extends it with the ap: subkey rather than redeclaring it.
+#
+# REQUIRED SUBSTITUTIONS:
+#   - device_name : Used to generate the AP SSID
+#
+# AP UX:
+#   SSID:       "${device_name} Setup"
+#   Password:   none (open AP — easier provisioning when you're standing in
+#               front of the device with a phone)
+#   When:       device boots and cannot connect to its STA WiFi within ~1 min
+#   How to use: connect phone to the Setup AP, the captive portal opens
+#               automatically, pick the new network and enter its credentials,
+#               device reboots into STA mode.
+#
+# USAGE:
+#   packages:
+#     connectivity: !include esphome-framework/common/connectivity.yaml
+#     provisioning: !include esphome-framework/addon/provisioning.yaml
+#==============================================================================
+
+wifi:
+  ap:
+    ssid: "${device_name} Setup"
+
+captive_portal:

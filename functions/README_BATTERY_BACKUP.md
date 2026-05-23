@@ -88,7 +88,6 @@ The BMS dependency is only active when Battery Exercise Mode is switched on. The
 substitutions:
   device_name: "lightning-switch-tower"
   friendly_name: "Lightning Switch Tower"
-  name_no_dashes: "lightning_switch_tower"
   device_description: "Lightning Tower UPS - SwitchBot Mini Plug + JBD BMS"
   exercise_bms_id: "bms0"   # optional, bms0 is the default
 

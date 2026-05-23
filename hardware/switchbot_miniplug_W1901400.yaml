@@ -13,7 +13,6 @@
 # REQUIRED SUBSTITUTIONS:
 #   - device_name        : ESPHome device name (lowercase, dashes ok)
 #   - friendly_name      : Human-readable device name
-#   - name_no_dashes     : Device name without dashes for IDs
 #   - device_description : Device description/comment
 #
 # PROVIDES:
@@ -67,7 +66,6 @@
 #   substitutions:
 #     device_name: "my-lamp"
 #     friendly_name: "My Lamp"
-#     name_no_dashes: "my_lamp"
 #     device_description: "Living room lamp on SwitchBot Mini Plug"
 #
 #   packages:
@@ -143,6 +141,19 @@ esp32_ble_tracker:
 
 bluetooth_proxy:
   active: true
+
+#------------------------------------------------------------------------------
+# Logger Overrides
+# This hardware drives a 40ms PWM glow effect on the status LED via a lambda
+# light effect. At the framework's default DEBUG level the light component
+# floods the log; demote it to INFO so the rest of DEBUG stays useful.
+# Lives here (not in common) so devices on other hardware that pull in third-
+# party packages with stricter global log levels aren't broken by an INFO
+# override they don't need.
+#------------------------------------------------------------------------------
+logger:
+  logs:
+    light: INFO
 
 #------------------------------------------------------------------------------
 # Hardware Outputs

@@ -1,0 +1,66 @@
+#==============================================================================
+# SNTP Time Synchronization Package
+#==============================================================================
+# File: common/sntp.yaml
+#
+# Provides network time synchronization via SNTP with human-readable
+# time display and sync status reporting.
+#
+# DEPENDENCIES:
+#   None - this package is self-contained
+#
+# REQUIRED SUBSTITUTIONS:
+#   None
+#
+# PROVIDES:
+#   IDs:
+#     - sntp_time        : Time component for use in lambdas
+#     - now_text_sync    : Text sensor updated on each SNTP sync
+#     - time_text        : Human-readable current time (updates every 60s)
+#
+# USAGE:
+#   packages:
+#     sntp: !include common/sntp.yaml
+#
+# To reference time in other files:
+#   lambda: |-
+#     auto now = id(sntp_time).now();
+#     if (now.is_valid()) {
+#       // use now.hour, now.minute, etc.
+#     }
+#==============================================================================
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: "America/Chicago"
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+    on_time_sync:
+      then:
+        - logger.log: "Synchronized SNTP clock"
+        - lambda: |-
+              id(now_text_sync).publish_state(id(sntp_time).now().strftime("Synced: %Y-%m-%d %H:%M:%S"));
+
+text_sensor:
+  # Sync status - updated each time SNTP successfully syncs
+  - platform: template
+    name: "SNTP Sync Status"
+    id: now_text_sync
+    icon: mdi:clock-check-outline
+    entity_category: diagnostic
+
+  # Human-readable current time
+  - platform: template
+    name: "Current Time"
+    id: time_text
+    icon: mdi:clock-outline
+    update_interval: 60s
+    entity_category: diagnostic
+    lambda: |-
+      if (id(sntp_time).now().is_valid()) {
+        return id(sntp_time).now().strftime("%H:%M:%S - %d-%m-%Y");
+      }
+      return {"Waiting for sync..."};

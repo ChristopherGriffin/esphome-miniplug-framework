@@ -37,7 +37,6 @@ Combines two addon packages to provide full battery backup monitoring when a JBD
 substitutions:
   device_name: "battery-monitor"
   friendly_name: "Battery Monitor"
-  name_no_dashes: "battery_monitor"
   device_description: "SwitchBot Mini Plug + JBD BMS battery backup monitor"
 
 external_components:

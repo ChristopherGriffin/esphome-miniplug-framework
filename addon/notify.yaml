@@ -10,8 +10,6 @@
 # DEPENDENCIES:
 #   - Home Assistant API connection (api: block in device config)
 #   - notification_message : Text sensor provided by the function package
-#   - appliance_state      : Text sensor provided by the function package
-#                            (used to determine alert vs info level)
 #
 # USAGE:
 #   packages:
@@ -21,7 +19,7 @@
 #   Event type : esphome.notification
 #   Data:
 #     device  : ESPHome device name
-#     level   : "alert" when appliance_state is Dead, otherwise "info"
+#     level   : always "info" today (placeholder for future severity classification)
 #     message : value of notification_message at time of transition
 #
 # HOME ASSISTANT AUTOMATION (add to automations.yaml or paste into the UI):
@@ -78,6 +76,8 @@
 #   1. Set "Test Message" text field to whatever you want to inject
 #   2. Press the "Send Test Notification" button
 #   The message is published to notification_message, triggering the event below.
+#   Note: identical consecutive messages are suppressed by the dedup global —
+#   change the text to fire repeatedly.
 text:
   - platform: template
     name: "Test Message"
@@ -100,16 +100,70 @@ button:
           id: notification_message
           state: !lambda 'return id(test_notification_text).state;'
 
+globals:
+  - id: g_last_sent_notification
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24   # match the function file's global cap
+    initial_value: '""'
+
+  # Flash-backed timestamp of the last published notification. Survives a
+  # power cut and is republished to the display sensor on boot so the time
+  # of the original event remains visible after a reset.
+  - id: g_last_notification_time
+    type: std::string
+    restore_value: true
+    max_restore_data_length: 24   # "YYYY-MM-DD HH:MM:SS" + room for safety
+    initial_value: '""'
+
+#------------------------------------------------------------------------------
+# Boot-time restore — push the saved timestamp into the display sensor so
+# the value is visible in the web UI and HA after a reboot.
+#------------------------------------------------------------------------------
+esphome:
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          id(notification_time).publish_state(id(g_last_notification_time));
+
 text_sensor:
+  # Time of the last confirmed notification. Updates whenever a non-duplicate
+  # notification_message is published. Format: "YYYY-MM-DD HH:MM:SS" in the
+  # device's local time. If a notification fires before time has synced from
+  # Home Assistant, the timestamp is left blank rather than recording garbage.
+  - platform: template
+    name: "Notification Time"
+    id: notification_time
+    icon: mdi:clock-outline
+    update_interval: never
+    lambda: 'return id(g_last_notification_time);'
+
   - id: !extend notification_message
     on_value:
       - if:
           condition:
-            lambda: 'return !x.empty();'
+            lambda: 'return !x.empty() && x != id(g_last_sent_notification);'
           then:
+            - lambda: |-
+                id(g_last_sent_notification) = x;
+                // Capture the moment of the transition. Skip if HA hasn't
+                // synced time yet — better blank than wildly wrong.
+                if (id(device_time).now().is_valid()) {
+                  char buf[24];
+                  id(device_time).now().strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S");
+                  id(g_last_notification_time) = buf;
+                  id(notification_time).publish_state(buf);
+                }
+            - logger.log:
+                level: INFO
+                format: "Notification sent at %s: %s"
+                args:
+                  - 'id(g_last_notification_time).c_str()'
+                  - 'x.c_str()'
             - homeassistant.event:
                 event: esphome.notification
                 data:
                   device: !lambda 'return App.get_name();'
-                  level: !lambda 'return (id(appliance_state).state == "Dead") ? std::string("alert") : std::string("info");'
+                  level: "info"
                   message: !lambda 'return x;'

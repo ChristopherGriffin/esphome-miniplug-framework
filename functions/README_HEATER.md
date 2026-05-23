@@ -109,7 +109,6 @@ substitutions:
   device_name: "well-heater"
   device_description: "Well house freeze protection heater"
   friendly_name: "Well Heater"
-  name_no_dashes: "well_heater"
 
 packages:
   base: !include common/esp_common.yaml

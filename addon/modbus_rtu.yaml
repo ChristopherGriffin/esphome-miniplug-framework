@@ -1,0 +1,89 @@
+#==============================================================================
+# Modbus RTU Bus - Add-on Package
+#==============================================================================
+# File: addon/modbus_rtu.yaml
+#
+# Generic Modbus RTU transport layer. Sets up a UART and a Modbus instance
+# that any number of modbus_controller blocks can attach to. Device-specific
+# register maps belong in functions/ packages.
+#
+# Designed for RS485 adapters with AUTO direction control (e.g. HW-519,
+# MAX13487-based modules), so no flow_control_pin is set. If you swap in
+# a manual-DE/RE board (e.g. raw MAX485), add flow_control_pin via the
+# device YAML and edit the modbus block below.
+#
+# SUBSTITUTIONS (override in your device YAML as needed):
+#   modbus_uart_id        : id used for the UART (default: modbus_uart)
+#   modbus_id             : id used for the Modbus bus (default: modbus_bus)
+#   modbus_tx_pin         : ESP -> RS485 TXD (default: GPIO26)
+#   modbus_rx_pin         : ESP <- RS485 RXD (default: GPIO27)
+#   modbus_baud_rate      : serial baud (default: 9600)
+#   modbus_send_wait_time : inter-frame gap (default: 200ms)
+#   modbus_uart_hexdump   : "True" enables raw hex dump of every UART chunk
+#                           (default: "False"). When enabled, each TX and RX
+#                           burst is logged at INFO level as a space-separated
+#                           hex string with a [TX] or [RX] tag and byte count.
+#                           Use this to verify the HW-519 self-echo: every TX
+#                           burst should be followed immediately by RX bursts
+#                           containing the same bytes (the auto-direction
+#                           transceiver doesn't fully gate its receiver during
+#                           TX, so it sees its own transmission).
+#
+# WIRING (ESP32 DevKit V1 -> HW-519):
+#   ESP32 ${modbus_tx_pin}  ->  HW-519 RXD
+#   ESP32 ${modbus_rx_pin}  <-  HW-519 TXD
+#   ESP32 VIN (USB 5V)      ->  HW-519 VCC      (3.3V also works on most)
+#   ESP32 GND               ->  HW-519 GND
+#   HW-519 A/B              ->  RS485 bus to slave A/B
+#
+# Coexists with the older addon/ml2420_modbus.yaml: don't include both, since
+# they would create duplicate uart/modbus components.
+#
+# USAGE:
+#   packages:
+#     modbus: !include esphome-framework/addon/modbus_rtu.yaml
+#==============================================================================
+
+substitutions:
+  modbus_uart_id: modbus_uart
+  modbus_id: modbus_bus
+  modbus_tx_pin: GPIO26
+  modbus_rx_pin: GPIO27
+  modbus_baud_rate: "9600"
+  modbus_send_wait_time: 200ms
+  modbus_uart_hexdump: "False"
+
+uart:
+  id: ${modbus_uart_id}
+  tx_pin: ${modbus_tx_pin}
+  rx_pin: ${modbus_rx_pin}
+  baud_rate: ${modbus_baud_rate}
+  data_bits: 8
+  stop_bits: 1
+  parity: NONE
+  # Raw hex dump of every UART chunk for diagnostic. dummy_receiver: false
+  # means modbus still sees its RX bytes normally; we only observe.
+  debug:
+    direction: BOTH
+    dummy_receiver: false
+    after:
+      timeout: 10ms
+    sequence:
+      - lambda: |-
+          std::string flag = "${modbus_uart_hexdump}";
+          if (flag != "True" && flag != "true" && flag != "TRUE" && flag != "1") return;
+          const char* tag = (direction == UART_DIRECTION_TX) ? "TX" :
+                            (direction == UART_DIRECTION_RX) ? "RX" : "??";
+          std::string hex;
+          hex.reserve(bytes.size() * 3);
+          for (auto b : bytes) {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%02X ", b);
+            hex += buf;
+          }
+          ESP_LOGI("modbus_uart", "%s [%d] %s", tag, (int)bytes.size(), hex.c_str());
+
+modbus:
+  id: ${modbus_id}
+  uart_id: ${modbus_uart_id}
+  send_wait_time: ${modbus_send_wait_time}

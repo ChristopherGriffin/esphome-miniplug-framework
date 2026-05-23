@@ -1,0 +1,324 @@
+
+substitutions:
+  mppt_name: "mppt"
+  mppt_tx_pin: "GPIO17"
+  mppt_rx_pin: "GPIO16"
+  mppt_update_interval: "3s"
+
+uart:
+  id: mppt_uart
+  baud_rate: 9600
+  data_bits: 8
+  stop_bits: 1
+  parity: NONE
+  tx_pin: ${mppt_tx_pin}
+  rx_pin: ${mppt_rx_pin}
+
+modbus:
+  uart_id: mppt_uart
+  send_wait_time: 300ms
+
+modbus_controller:
+  - id: srne
+    address: 0xFF
+    setup_priority: -10
+    update_interval: ${mppt_update_interval}
+
+sensor:
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_battery_soc
+    name: "${mppt_name} battery soc"
+    address: 0x0100
+    unit_of_measurement: '%'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_battery_voltage
+    name: "${mppt_name} battery voltage"
+    address: 0x0101
+    unit_of_measurement: 'V'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_battery_charge_current
+    name: "${mppt_name} charge current"
+    address: 0x0102
+    unit_of_measurement: 'A'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: output_voltage
+    name: "${mppt_name} output voltage"
+    address: 0x0104
+    unit_of_measurement: 'V'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: output_current
+    name: "${mppt_name} output current"
+    address: 0x0105
+    unit_of_measurement: 'A'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: output_watts
+    name: "${mppt_name} output watts"
+    address: 0x0106
+    unit_of_measurement: 'W'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+    
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_panel_voltage
+    name: "${mppt_name} panel voltage"
+    address: 0x0107
+    unit_of_measurement: 'V'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_panel_current
+    name: "${mppt_name} panel current"
+    address: 0x0108
+    unit_of_measurement: 'A'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.01
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_panel_watts
+    name: "${mppt_name} panel watts"
+    address: 0x0109
+    unit_of_measurement: 'W'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+    filters:
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: battery_min_volts
+    name: "${mppt_name} battery min today"
+    address: 0x010B
+    unit_of_measurement: 'V'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: battery_max_volts
+    name: "${mppt_name} battery max today"
+    address: 0x010C
+    unit_of_measurement: 'V'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: solar_max_watts
+    name: "${mppt_name} panel max today"
+    address: 0x010F
+    unit_of_measurement: 'W'
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 2
+    filters:
+      - multiply: 0.1
+      - median:
+          window_size: 5
+          send_every: 1
+          send_first_at: 1
+      
+### these are controls I made#########
+      
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_lvd_recovery
+    name: "${mppt_name} LVD Recovery Voltage"
+    address: 0xE00B
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+      
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_lvd_disconnect
+    name: "${mppt_name} LVD Disconnect Voltage"
+    address: 0xE00D
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    filters:
+      - multiply: 0.1
+
+    # Battery type (0=User, 1=Open, 2=Sealed, 3=Gel, 4=Lithium)
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: srne_battery_type
+    name: "${mppt_name} battery type"
+    address: 0xE004
+    register_type: holding
+    value_type: U_WORD
+    accuracy_decimals: 0
+
+  # Boost/Absorb (LiFePO4: overcharge voltage) - E008 (0.1V units)
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: srne_boost_voltage
+    name: "${mppt_name} boost voltage (read)"
+    address: 0xE008
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    filters:
+       - multiply: 0.1
+
+  # Float (LiFePO4: overcharge recovery voltage) - E009 (0.1V units)
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: srne_float_voltage
+    name: "${mppt_name} float voltage (read)"
+    address: 0xE009
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    accuracy_decimals: 1
+    filters:
+       - multiply: 0.1
+
+number:
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_lvd_disconnect_setpoint
+    name: "${mppt_name} LVD Disconnect Setpoint"
+    address: 0xE00D
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    # SRNE expects value * 10 (0.1V units), ESPHome handles scaling
+    multiply: 10.0
+    min_value: 10.1      # adjust bounds as you like
+    max_value: 13.0
+    step: 0.1
+  
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_lvd_recovery_setpoint
+    name: "${mppt_name} LVD Recovery Voltage"
+    address: 0xE00B
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    # SRNE expects value * 10 (0.1V units), ESPHome handles scaling
+    multiply: 10.0
+    min_value: 10.1      # adjust bounds as you like
+    max_value: 13.0
+    step: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_boost_voltage_setpoint
+    name: "${mppt_name} Boost Voltage Setpoint"
+    address: 0xE008
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    mode: box
+
+    # SRNE uses 0.1V units
+    multiply: 10.0
+
+    min_value: 13.6
+    max_value: 14.6
+    step: 0.1
+
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_float_voltage_setpoint
+    name: "${mppt_name} Float Voltage Setpoint"
+    address: 0xE009
+    register_type: holding
+    value_type: U_WORD
+    unit_of_measurement: "V"
+    mode: box
+    # SRNE uses 0.1V units
+    multiply: 10.0
+
+    min_value: 13.2
+    max_value: 14.2
+    step: 0.1
+
+  - platform: modbus_controller
+    modbus_controller_id: srne
+    id: ml2420_battery_type_setpoint
+    name: "${mppt_name} Battery Type Setpoint"
+    address: 0xE004
+    register_type: holding
+    value_type: U_WORD
+
+    min_value: 0
+    max_value: 4
+    step: 1

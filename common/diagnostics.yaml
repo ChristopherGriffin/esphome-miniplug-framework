@@ -1,0 +1,102 @@
+#==============================================================================
+# Diagnostics Package
+#==============================================================================
+# File: common/diagnostics.yaml
+#
+# Standard diagnostic entities — connection status, WiFi signal, uptime,
+# version info, network details, restart switch. Separated from connectivity
+# so that devices using third-party packages (which often bring their own
+# wifi_signal / uptime / version sensors) can opt out without losing their
+# network stack.
+#
+# Pair with:
+#   - common/connectivity.yaml  : wifi/api/ota/time (required)
+#   - addon/provisioning.yaml   : AP fallback + captive portal
+#
+# PROVIDES (entity IDs):
+#   - uptime_sensor : raw seconds (internal)
+#   - uptime_human  : human-readable text sensor
+#
+# ENTITIES EXPOSED TO HOME ASSISTANT:
+#   Binary Sensors:
+#     - Status                : Online/offline (device_class: connectivity)
+#   Sensors:
+#     - WiFi Signal Strength  : RSSI in dBm
+#   Text Sensors:
+#     - Uptime                : Human-readable
+#     - ESPHome Version
+#     - IP / SSID / BSSID / MAC
+#   Switches:
+#     - Restart
+#==============================================================================
+
+binary_sensor:
+  - platform: status
+    name: "Status"
+    entity_category: diagnostic
+
+sensor:
+  # WiFi signal strength in dBm. Typical values: -30 (excellent) to -90 (poor).
+  - platform: wifi_signal
+    name: "WiFi Signal Strength"
+    update_interval: 60s
+    entity_category: diagnostic
+
+  # Internal uptime counter — drives the human-readable text sensor below.
+  - platform: uptime
+    name: "Uptime Seconds"
+    id: uptime_sensor
+    update_interval: 60s
+    internal: true
+    on_raw_value:
+      then:
+        - text_sensor.template.publish:
+            id: uptime_human
+            state: !lambda |-
+              int seconds = round(id(uptime_sensor).get_raw_state());
+              int days = seconds / (24 * 3600);
+              seconds = seconds % (24 * 3600);
+              int hours = seconds / 3600;
+              seconds = seconds % 3600;
+              int minutes = seconds / 60;
+              seconds = seconds % 60;
+              return (
+                (days ? to_string(days) + "d " : "") +
+                (hours ? to_string(hours) + "h " : "") +
+                (minutes ? to_string(minutes) + "m " : "") +
+                (to_string(seconds) + "s")
+              ).c_str();
+
+text_sensor:
+  - platform: template
+    name: "Uptime"
+    id: uptime_human
+    icon: mdi:clock-start
+    entity_category: diagnostic
+
+  - platform: version
+    name: "ESPHome Version"
+    entity_category: diagnostic
+
+  - platform: wifi_info
+    ip_address:
+      name: "IP"
+      icon: mdi:ip-outline
+      entity_category: diagnostic
+    ssid:
+      name: "SSID"
+      icon: mdi:wifi-settings
+      entity_category: diagnostic
+    bssid:
+      name: "BSSID"
+      icon: mdi:wifi-settings
+      entity_category: diagnostic
+    mac_address:
+      name: "MAC"
+      icon: mdi:network-outline
+      entity_category: diagnostic
+
+switch:
+  - platform: restart
+    name: "Restart"
+    entity_category: config

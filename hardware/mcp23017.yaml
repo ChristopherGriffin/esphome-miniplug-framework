@@ -1,0 +1,102 @@
+#==============================================================================
+# MCP23017 - I/O Expander Package
+#==============================================================================
+# File: hardware/mcp23017.yaml
+#
+# Microchip MCP23017 16-channel I2C I/O expander. Include this when your
+# device needs more GPIOs than the board provides. The chip exposes 16 pins
+# split into two 8-pin banks: GPA (numbers 0-7) and GPB (numbers 8-15).
+# Each pin is configured independently downstream as input or output via
+# the standard ESPHome `mcp23xxx:` pin descriptor.
+#
+# DEPENDENCIES:
+#   - none. This package declares its own i2c bus using substitutions.
+#     If you include other I2C peripheral packages that also declare i2c
+#     using the same ${i2c_sda}/${i2c_scl} substitutions, they merge into
+#     a single bus — no conflict.
+#
+# REQUIRED SUBSTITUTIONS:
+#   - none (sensible defaults provided)
+#
+# OPTIONAL SUBSTITUTIONS:
+#   - mcp_id      : ESPHome ID for the chip (default: "io_expander").
+#                   Override if you have multiple MCP23017s on the same bus.
+#   - mcp_address : I2C address (default: "0x20"). Set by A0/A1/A2 pins —
+#                   range 0x20 (all GND) through 0x27 (all VCC).
+#   - i2c_sda     : I2C SDA pin (default: GPIO21 — ESP32 standard).
+#                   For ESP8266/D1-mini, override to GPIO4 (D2).
+#   - i2c_scl     : I2C SCL pin (default: GPIO22 — ESP32 standard).
+#                   For ESP8266/D1-mini, override to GPIO5 (D1).
+#
+# PIN NUMBERING (used in mcp23xxx: number: N downstream):
+#   ┌──────────────────────────────────────────────────────┐
+#   │  Bank A (GPA0..GPA7) → numbers  0..7                │
+#   │  Bank B (GPB0..GPB7) → numbers  8..15               │
+#   └──────────────────────────────────────────────────────┘
+#
+# USAGE — single chip on default ESP32 I2C pins:
+#   packages:
+#     base:     !include common/esp_common.yaml
+#     hardware: !include hardware/wemos_d1_mini32_idf.yaml
+#     io:       !include hardware/mcp23017.yaml
+#
+#   # Reference pins downstream by their FUNCTION, not pin number:
+#   binary_sensor:
+#     - platform: gpio
+#       name: "Open Limit Switch"
+#       id: limit_open
+#       pin:
+#         mcp23xxx: io_expander    # default ${mcp_id}
+#         number: 0                # GPA0
+#         mode:
+#           input: true
+#           pullup: true
+#         inverted: true
+#
+#   switch:
+#     - platform: gpio
+#       name: "Door Latch"
+#       pin:
+#         mcp23xxx: io_expander
+#         number: 8                # GPB0
+#         mode:
+#           output: true
+#
+# USAGE — non-default I2C pins (e.g. ESP8266):
+#   substitutions:
+#     i2c_sda: GPIO4   # D2 on Wemos D1 mini
+#     i2c_scl: GPIO5   # D1
+#
+#   packages:
+#     base:     !include common/esp_common.yaml
+#     hardware: !include hardware/nodemcuv2.yaml
+#     io:       !include hardware/mcp23017.yaml
+#
+# USAGE — multiple chips on the same bus:
+#   packages:
+#     io_a: !include
+#       file: hardware/mcp23017.yaml
+#       vars:
+#         mcp_id: "io_expander_a"
+#         mcp_address: "0x20"
+#     io_b: !include
+#       file: hardware/mcp23017.yaml
+#       vars:
+#         mcp_id: "io_expander_b"
+#         mcp_address: "0x21"
+#==============================================================================
+
+substitutions:
+  mcp_id:      io_expander
+  mcp_address: "0x20"
+  i2c_sda:     GPIO21
+  i2c_scl:     GPIO22
+
+i2c:
+  sda: ${i2c_sda}
+  scl: ${i2c_scl}
+  scan: true
+
+mcp23017:
+  - id: ${mcp_id}
+    address: ${mcp_address}

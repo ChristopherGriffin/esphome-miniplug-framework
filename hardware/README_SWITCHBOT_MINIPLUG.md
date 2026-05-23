@@ -129,7 +129,6 @@ substitutions:
   device_name: "my-device"
   device_description: "My SwitchBot Mini Plug device"
   friendly_name: "My Device"
-  name_no_dashes: "my_device"
 
 packages:
   base: !include common/esp_common.yaml

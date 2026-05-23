@@ -138,7 +138,6 @@ substitutions:
   device_name: "porch-light"
   device_description: "Front porch light on sunset schedule"
   friendly_name: "Porch Light"
-  name_no_dashes: "porch_light"
   latitude: "33.4484"
   longitude: "-112.0740"
 

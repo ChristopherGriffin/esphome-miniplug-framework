@@ -21,7 +21,6 @@ substitutions:
   device_name: "garage-heater"
   device_description: "Garage space heater with freeze protection"
   friendly_name: "Garage Heater"
-  name_no_dashes: "garage_heater"
 
 packages:
   base: !include ../common/esp_common.yaml

@@ -1,0 +1,748 @@
+#==============================================================================
+# Electechsup R4D1C32 - 32-Channel RS485 Output Driver Function Package
+#==============================================================================
+# File: functions/r4d1c32_outputs.yaml
+#
+# Drives an Electechsup R4D1C32 32-channel ULN2803A board over Modbus RTU.
+# Each channel is a low-side driver that sinks up to 300mA to GND. What you
+# wire to a channel is your choice - external relay coils, LEDs, solenoid
+# valves, small DC motors, opto inputs on a PLC, etc. The board itself does
+# NOT switch mains; it just pulls a pin to ground.
+#
+# PROTOCOL (Modbus framing, NON-standard semantics - it is NOT coil-based):
+#   - Channel number (1..32) is encoded in the Modbus *register address*.
+#   - FC06 write: the 16-bit value packs [command_byte, delay_byte]:
+#       0x0100 = Open  (energize - pull channel pin to GND)
+#       0x0200 = Close (de-energize - release pin to high-impedance)
+#       0x0300 = Toggle (self-locking)
+#       0x0400 = Latch  (this channel on, ALL others off)
+#       0x0500 = Momentary (1s pulse)
+#       0x06xx = Delay xx seconds (auto-off after xx)
+#   - Register address 0x0000 + value 0x0700 = All Open, 0x0800 = All Close.
+#   - FC03 read: returns 0x0001 = energized, 0x0000 = released.
+#   - The R4D1C32's FC06 response is byte-identical to the request. HW-519
+#     auto-direction transceivers also self-echo on TX, so RX bursts will
+#     often look exactly like the TX that just went out - this is normal.
+#
+# IMPLEMENTATION NOTES:
+#   - Each channel is a `modbus_controller` switch. State read is the normal
+#     FC03 of the holding register with bitmask 0x0001 (board returns 0x0001
+#     for ON, 0x0000 for OFF). The write is fully overridden via write_lambda
+#     which fills the payload with the COMPLETE Modbus frame (slave, FC, reg,
+#     value) minus CRC - ESPHome appends CRC automatically.
+#   - All On / All Off live as a single internal "bulk" switch with
+#     assumed_state:true (no polling of the bogus register 0). The two
+#     template buttons just call switch.turn_on / switch.turn_off on it.
+#
+# SLAVE ADDRESS - set on the board DIP switches A0..A5 (6 bits, binary):
+#     A0 = bit 0 (1)   A1 = bit 1 (2)   A2 = bit 2 (4)
+#     A3 = bit 3 (8)   A4 = bit 4 (16)  A5 = bit 5 (32)
+#   Example: address 1 -> A0 ON only. Mirror in r4d1c32_address below.
+#
+# DEPENDENCIES:
+#   - addon/modbus_rtu.yaml (provides ${modbus_id})
+#
+# SUBSTITUTIONS:
+#   r4d1c32_id              : modbus_controller id (default: r4d1c32)
+#   r4d1c32_name            : friendly name prefix (default: "R4D1C32")
+#   r4d1c32_address         : Modbus slave address - MUST match DIP switches
+#                             (default: 1)
+#   r4d1c32_update_interval : poll interval for channel state (default: 2s)
+#
+# PROVIDES (HA entities):
+#   - 32 x switch       : ${r4d1c32_name} Ch 01..32
+#   - 2  x button       : All On, All Off
+#   - 1  x binary_sensor: Modbus Online (diagnostic)
+#
+# USAGE:
+#   packages:
+#     base:      !include esphome-framework/common/connectivity.yaml
+#     hardware:  !include esphome-framework/hardware/esp32_devkit_v1.yaml
+#     modbus:    !include esphome-framework/addon/modbus_rtu.yaml
+#     r4d1c32:   !include esphome-framework/functions/r4d1c32_outputs.yaml
+#==============================================================================
+
+substitutions:
+  r4d1c32_id: r4d1c32
+  r4d1c32_name: "R4D1C32"
+  r4d1c32_address: "1"
+  r4d1c32_update_interval: 2s
+
+modbus_controller:
+  - id: ${r4d1c32_id}
+    modbus_id: ${modbus_id}
+    address: ${r4d1c32_address}
+    setup_priority: -10
+    update_interval: ${r4d1c32_update_interval}
+    command_throttle: 100ms
+    on_online:
+      then:
+        - binary_sensor.template.publish:
+            id: ${r4d1c32_id}_online
+            state: true
+    on_offline:
+      then:
+        - binary_sensor.template.publish:
+            id: ${r4d1c32_id}_online
+            state: false
+
+binary_sensor:
+  - platform: template
+    id: ${r4d1c32_id}_online
+    name: "${r4d1c32_name} Modbus Online"
+    device_class: connectivity
+    entity_category: diagnostic
+
+#==============================================================================
+# 32 channel switches. Each one reads FC03 at its address (bit 0 = ON) and
+# writes FC06 with a full custom byte payload built in write_lambda. The
+# substitution ${r4d1c32_address} is text-replaced into the lambda source
+# before compile so the slave ID is baked in - if you change the DIP-switch
+# address you only need to update the substitution and rebuild.
+#==============================================================================
+switch:
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch01
+    name: "${r4d1c32_name} Ch 01"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 1
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address}); // slave
+      payload.push_back(0x06);                // FC06
+      payload.push_back(0x00);                // reg hi
+      payload.push_back(1);                   // reg lo (channel)
+      payload.push_back(x ? 0x01 : 0x02);     // cmd: Open / Close
+      payload.push_back(0x00);                // delay
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch02
+    name: "${r4d1c32_name} Ch 02"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 2
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(2);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch03
+    name: "${r4d1c32_name} Ch 03"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 3
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(3);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch04
+    name: "${r4d1c32_name} Ch 04"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 4
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(4);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch05
+    name: "${r4d1c32_name} Ch 05"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 5
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(5);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch06
+    name: "${r4d1c32_name} Ch 06"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 6
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(6);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch07
+    name: "${r4d1c32_name} Ch 07"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 7
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(7);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch08
+    name: "${r4d1c32_name} Ch 08"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 8
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(8);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch09
+    name: "${r4d1c32_name} Ch 09"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 9
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(9);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch10
+    name: "${r4d1c32_name} Ch 10"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 10
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(10);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch11
+    name: "${r4d1c32_name} Ch 11"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 11
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(11);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch12
+    name: "${r4d1c32_name} Ch 12"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 12
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(12);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch13
+    name: "${r4d1c32_name} Ch 13"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 13
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(13);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch14
+    name: "${r4d1c32_name} Ch 14"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 14
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(14);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch15
+    name: "${r4d1c32_name} Ch 15"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 15
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(15);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch16
+    name: "${r4d1c32_name} Ch 16"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 16
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(16);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch17
+    name: "${r4d1c32_name} Ch 17"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 17
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(17);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch18
+    name: "${r4d1c32_name} Ch 18"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 18
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(18);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch19
+    name: "${r4d1c32_name} Ch 19"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 19
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(19);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch20
+    name: "${r4d1c32_name} Ch 20"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 20
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(20);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch21
+    name: "${r4d1c32_name} Ch 21"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 21
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(21);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch22
+    name: "${r4d1c32_name} Ch 22"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 22
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(22);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch23
+    name: "${r4d1c32_name} Ch 23"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 23
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(23);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch24
+    name: "${r4d1c32_name} Ch 24"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 24
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(24);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch25
+    name: "${r4d1c32_name} Ch 25"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 25
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(25);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch26
+    name: "${r4d1c32_name} Ch 26"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 26
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(26);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch27
+    name: "${r4d1c32_name} Ch 27"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 27
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(27);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch28
+    name: "${r4d1c32_name} Ch 28"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 28
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(28);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch29
+    name: "${r4d1c32_name} Ch 29"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 29
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(29);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch30
+    name: "${r4d1c32_name} Ch 30"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 30
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(30);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch31
+    name: "${r4d1c32_name} Ch 31"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 31
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(31);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_ch32
+    name: "${r4d1c32_name} Ch 32"
+    icon: "mdi:electric-switch"
+    register_type: holding
+    address: 32
+    bitmask: 0x0001
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(32);
+      payload.push_back(x ? 0x01 : 0x02);
+      payload.push_back(0x00);
+      return x ? true : false;
+
+  #----------------------------------------------------------------------------
+  # Bulk control - internal switch targeting register 0 (broadcast). Polling
+  # is disabled with assumed_state because register 0 isn't a real channel.
+  # Two buttons below flip this internal switch to fire All On / All Off.
+  #----------------------------------------------------------------------------
+  - platform: modbus_controller
+    modbus_controller_id: ${r4d1c32_id}
+    id: ${r4d1c32_id}_bulk
+    internal: true
+    register_type: holding
+    address: 0
+    assumed_state: true
+    use_write_multiple: false
+    write_lambda: |-
+      payload.push_back(${r4d1c32_address});
+      payload.push_back(0x06);
+      payload.push_back(0x00);
+      payload.push_back(0x00);                // register 0 (broadcast)
+      payload.push_back(x ? 0x07 : 0x08);     // 0x07 = All Open, 0x08 = All Close
+      payload.push_back(0x00);
+      return x ? true : false;
+
+#==============================================================================
+# Buttons - dispatch to the internal bulk switch.
+#==============================================================================
+button:
+  - platform: template
+    name: "${r4d1c32_name} All On"
+    icon: "mdi:flash"
+    on_press:
+      - switch.turn_on: ${r4d1c32_id}_bulk
+
+  - platform: template
+    name: "${r4d1c32_name} All Off"
+    icon: "mdi:flash-off"
+    on_press:
+      - switch.turn_off: ${r4d1c32_id}_bulk
